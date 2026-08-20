@@ -1,11 +1,14 @@
 package com.sparrowwallet.drongo.protocol;
 
+import com.sparrowwallet.drongo.Network;
 import com.sparrowwallet.drongo.Utils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -19,10 +22,6 @@ import java.util.Map;
  * branch of github.com/luke-jr/bitcoin, at commit 5a3f788e, and records every intermediate of
  * CBlockHeader::GetHash() in src/primitives/block.cpp on that branch. Asserting each stage means a
  * future divergence names the stage that broke rather than only the final hash.
- *
- * NOTE: none of the getPoW* methods asserted below exist yet, so this class does not compile as it
- * stands. It is the specification for the implementation, written first and deliberately. Each
- * assertion carries a TODO naming the method it wants.
  *
  * Byte order is the main hazard here, since drongo's Sha256Hash holds display order while Core's
  * uint256 holds wire order, and getReversedBytes()/ReversedBytes() therefore mean opposite things.
@@ -41,6 +40,19 @@ public class BlockHeaderPoWHashTest {
     private static final String FIXTURE = "/block_header_v2.json";
 
     /**
+     * A v2 header that tells the two hashes apart: it meets its target under BLAKE2b but misses it under
+     * SHA256d, so it only verifies if verifyProofOfWork() uses the former.
+     *
+     * Produced offline from the first fixture header by setting nBits to 0x2000ffff, a target of roughly
+     * 2^248 that lets about one hash in 256 through while staying well inside the regtest proof of work
+     * limit, then grinding nonce2 until both conditions held. nonce2 = 58 was the first to qualify.
+     */
+    private static final String DISCRIMINATING_HEADER_HEX = "000000a01f1e1d1c1b1a191817161514131211100f0e0d0c0b0a0908070605040302010000112233445566778899aabbccddeeff00102030405060708090a0b0c0d0e0f0a8913577ffff00200df0ad0b3a000000efcdab89ffeeddccbbaa998877665544332211005802000003005c000000000000000000000000000000000040d10c008967452301efcdab8967452301efcdab8967452301efcdab8967452301efcdab";
+    private static final long DISCRIMINATING_NBITS = 0x2000ffffL;
+    private static final String DISCRIMINATING_POW_HASH = "00415804f929ec833683e169539c464cdd80e60b691b300724637a1e43ba5818";
+    private static final String DISCRIMINATING_SHA256D_HASH = "3787e7abe8f0f1fac8bf8b4bad0bc704d6082f1e1cbc63366eefb35fdb5120e8";
+
+    /**
      * SHA256(tag || tag || m_xor_key), where m_xor_key is fed in wire order.
      * Fixture is wire order; the Java side is expected to return the raw 32 byte digest.
      */
@@ -48,7 +60,6 @@ public class BlockHeaderPoWHashTest {
     public void testXorKeyHash() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getPoWXorKeyHash() returning the raw 32 byte digest
             Assertions.assertArrayEquals(hex(header, "xor_key_hash"), blockHeader.getPoWXorKeyHash(),
                     name(header) + ": xor_key_hash mismatch");
         }
@@ -62,7 +73,6 @@ public class BlockHeaderPoWHashTest {
     public void testXorKeyMask() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getPoWXorKeyMask() returning the raw 32 byte mask
             Assertions.assertArrayEquals(hex(header, "mask"), blockHeader.getPoWXorKeyMask(),
                     name(header) + ": mask mismatch");
         }
@@ -78,7 +88,6 @@ public class BlockHeaderPoWHashTest {
     public void testHeaderHash1() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getPoWHash1() returning the raw 32 byte digest
             Assertions.assertArrayEquals(hex(header, "h1"), blockHeader.getPoWHash1(),
                     name(header) + ": h1 mismatch");
         }
@@ -92,7 +101,6 @@ public class BlockHeaderPoWHashTest {
     public void testMergeMiningHash() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getPoWHash2() returning the raw 32 byte digest
             Assertions.assertArrayEquals(hex(header, "h2"), blockHeader.getPoWHash2(),
                     name(header) + ": h2 mismatch");
         }
@@ -106,7 +114,6 @@ public class BlockHeaderPoWHashTest {
     public void testBlake2bRound1() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getPoWBlake2bRound1() returning the raw 32 byte digest
             Assertions.assertArrayEquals(hex(header, "blake2b_1"), blockHeader.getPoWBlake2bRound1(),
                     name(header) + ": blake2b_1 mismatch");
         }
@@ -119,7 +126,6 @@ public class BlockHeaderPoWHashTest {
     public void testAsicProfile() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getAsicProfile() returning m_flags & 3
             Assertions.assertEquals(number(header, "asic_profile"), blockHeader.getAsicProfile(),
                     name(header) + ": asic_profile mismatch");
         }
@@ -131,13 +137,12 @@ public class BlockHeaderPoWHashTest {
      *   1: nonce, nonce2, nonce3, time offset, round 1, h2                                                (80 bytes)
      *   2: 48 zero bytes, h2, nonce, nonce2, time offset, nonce3, round 1                                (128 bytes)
      *   3: as profile 2 with a further 32 zero bytes in front                                            (160 bytes)
-     * Fixture is wire order, as is the expected return. All five profiles appear in the fixture.
+     * Fixture is wire order, as is the expected return. All four profiles appear across the five headers.
      */
     @Test
     public void testAsicInput() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getPoWAsicInput() returning the profile specific stream
             Assertions.assertArrayEquals(hex(header, "asic_input"), blockHeader.getPoWAsicInput(),
                     name(header) + ": asic_input mismatch");
         }
@@ -150,7 +155,6 @@ public class BlockHeaderPoWHashTest {
     public void testBlake2bRound2() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getPoWBlake2bRound2() returning the raw 32 byte digest
             Assertions.assertArrayEquals(hex(header, "blake2b_2"), blockHeader.getPoWBlake2bRound2(),
                     name(header) + ": blake2b_2 mismatch");
         }
@@ -165,7 +169,6 @@ public class BlockHeaderPoWHashTest {
     public void testBlockHash() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            //TODO: BlockHeader.getPoWHash() returning a Sha256Hash, as getHash() does
             Assertions.assertEquals(header.get("block_hash"), blockHeader.getPoWHash().toString(),
                     name(header) + ": block_hash mismatch");
         }
@@ -200,8 +203,50 @@ public class BlockHeaderPoWHashTest {
         BlockHeader blockHeader = new BlockHeader(Utils.hexToBytes(BlockHeaderTest.GENESIS_HEADER_HEX));
 
         Assertions.assertFalse(blockHeader.isHeaderV2());
-        //TODO: BlockHeader.getPoWHash() falling back to getHash() when the header is not v2
         Assertions.assertEquals(blockHeader.getHash(), blockHeader.getPoWHash());
+    }
+
+    /**
+     * A header that passes its target under the BLAKE2b hash and fails it under SHA256d, so it only verifies
+     * if the proof of work is measured against the right one. A fixture header fails under either hash and
+     * so would not tell the two apart.
+     */
+    @Test
+    public void testVersion2VerifiesAgainstPoWHash() {
+        Network.set(Network.REGTEST);
+
+        BlockHeader blockHeader = new BlockHeader(Utils.hexToBytes(DISCRIMINATING_HEADER_HEX));
+        BigInteger target = blockHeader.getDifficultyTargetAsInteger();
+
+        Assertions.assertTrue(blockHeader.isHeaderV2());
+        Assertions.assertEquals(DISCRIMINATING_NBITS, blockHeader.getDifficultyTarget());
+        Assertions.assertTrue(target.compareTo(Network.get().getProofOfWorkLimit()) <= 0, "Target is easier than the regtest limit");
+
+        //The BLAKE2b hash is under the target, while the SHA256d hash is over it
+        Assertions.assertEquals(DISCRIMINATING_POW_HASH, blockHeader.getPoWHash().toString());
+        Assertions.assertEquals(DISCRIMINATING_SHA256D_HASH, blockHeader.getHash().toString());
+        Assertions.assertTrue(blockHeader.getPoWHash().toBigInteger().compareTo(target) <= 0, "BLAKE2b hash should meet the target");
+        Assertions.assertTrue(blockHeader.getHash().toBigInteger().compareTo(target) > 0, "SHA256d hash should miss the target");
+
+        Assertions.assertTrue(blockHeader.verifyProofOfWork());
+    }
+
+    /**
+     * A v1 header still verifies against SHA256d, since getPoWHash() delegates to getHash() for it.
+     */
+    @Test
+    public void testVersion1StillVerifies() {
+        Network.set(Network.MAINNET);
+
+        BlockHeader blockHeader = new BlockHeader(Utils.hexToBytes(BlockHeaderTest.GENESIS_HEADER_HEX));
+
+        Assertions.assertFalse(blockHeader.isHeaderV2());
+        Assertions.assertTrue(blockHeader.verifyProofOfWork());
+    }
+
+    @AfterEach
+    public void tearDown() throws Exception {
+        Network.set(null);
     }
 
     private BlockHeader parseHeader(Map<String, Object> header) {

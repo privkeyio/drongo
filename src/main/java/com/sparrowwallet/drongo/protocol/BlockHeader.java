@@ -436,14 +436,18 @@ public class BlockHeader extends Message {
         return Utils.decodeCompactBits(difficultyTarget);
     }
 
-    /** Checks the header hash meets its own claimed difficulty target, and that the target does not exceed the network proof of work limit. */
+    /**
+     * Checks the proof of work hash meets the header's own claimed difficulty target, and that the target does
+     * not exceed the network proof of work limit. A v1 header is measured against its SHA256d hash as before,
+     * while a v2 header is measured against the BLAKE2b hash its proof of work is actually done over.
+     */
     public boolean verifyProofOfWork() {
         BigInteger target = getDifficultyTargetAsInteger();
         if(target.signum() <= 0 || target.compareTo(Network.get().getProofOfWorkLimit()) > 0) {
             return false;
         }
 
-        return getHash().toBigInteger().compareTo(target) <= 0;
+        return getPoWHash().toBigInteger().compareTo(target) <= 0;
     }
 
     public byte[] bitcoinSerialize() {
