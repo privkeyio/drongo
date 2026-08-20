@@ -16,7 +16,7 @@ import java.util.Map;
  * Parse and serialize tests for v2 block headers, driven by block_header_v2.json.
  *
  * The fixture is copied unmodified from src/test/data/block_header_v2.json in the
- * pow_hf_blake2b branch of github.com/luke-jr/bitcoin, at commit a6d74ce5. The wire
+ * pow_hf_blake2b branch of github.com/luke-jr/bitcoin, at commit 5a3f788e. The wire
  * layout it encodes matches CBlockHeader::SERIALIZE_METHODS in src/primitives/block.h
  * on that branch.
  *
