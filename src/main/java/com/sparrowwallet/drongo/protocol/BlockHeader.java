@@ -26,6 +26,10 @@ public class BlockHeader extends Message {
     private static final int EXTRANONCE_LENGTH = 16;
     private static final int XOR_KEY_LENGTH = 16;
 
+    //The reference implementation pads the proof of work streams with uint128 zeroes. That is the same width
+    //as the extranonce, but unrelated to it, so it has its own constant here.
+    private static final int POW_PADDING_LENGTH = 16;
+
     private static final String TAG_XOR_KEY = "Bitcoin block hash PoW XOR key";
     private static final String TAG_XOR_MASK = "Bitcoin block hash PoW XOR mask";
     private static final String TAG_PREVBLOCK_HIDDEN = "Bitcoin prevblock header, hashed";
@@ -299,8 +303,7 @@ public class BlockHeader extends Message {
         try {
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             outputStream.write(getPoWHash1());
-            outputStream.write(new byte[EXTRANONCE_LENGTH]);
-            outputStream.write(new byte[EXTRANONCE_LENGTH]);
+            outputStream.write(new byte[2 * POW_PADDING_LENGTH]);
             outputStream.write(mmRhs.getReversedBytes());
 
             return Utils.taggedHash(TAG_MERGE_MINING, outputStream.toByteArray());
@@ -360,9 +363,9 @@ public class BlockHeader extends Message {
                 }
                 default -> {
                     if(getAsicProfile() == 3) {
-                        outputStream.write(new byte[2 * EXTRANONCE_LENGTH]);
+                        outputStream.write(new byte[2 * POW_PADDING_LENGTH]);
                     }
-                    outputStream.write(new byte[3 * EXTRANONCE_LENGTH]);
+                    outputStream.write(new byte[3 * POW_PADDING_LENGTH]);
                     outputStream.write(getPoWHash2());
                     writeNonces(outputStream);
                     outputStream.write(blake2bRound1);
