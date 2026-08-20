@@ -93,7 +93,7 @@ public class BlockHeader extends Message {
         }
 
         //The wire carries the time less the offset when the flag is set, so add it back to get the block time
-        time = timeOnWire + (usesTimeOffset() ? timeOffset : 0);
+        time = (timeOnWire + (usesTimeOffset() ? timeOffset : 0)) & 0xFFFFFFFFL;
 
         length = cursor - offset;
     }
@@ -158,7 +158,7 @@ public class BlockHeader extends Message {
 
     /** The time as it appears on the wire, which is the block time less the offset where the header uses one. */
     public long getTimeOnWire() {
-        return time - (usesTimeOffset() ? timeOffset : 0);
+        return (time - (usesTimeOffset() ? timeOffset : 0)) & 0xFFFFFFFFL;
     }
 
     private boolean usesTimeOffset() {

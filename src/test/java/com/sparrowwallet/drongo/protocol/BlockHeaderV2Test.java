@@ -27,6 +27,9 @@ import java.util.Map;
 public class BlockHeaderV2Test {
     private static final String FIXTURE = "/block_header_v2.json";
 
+    //A v2 header with a wire time of 0xffffff00, a time offset of 0x200, and the time offset flag set
+    private static final String WRAPPING_TIME_HEADER_HEX = "000000a01f1e1d1c1b1a191817161514131211100f0e0d0c0b0a0908070605040302010000112233445566778899aabbccddeeff00102030405060708090a0b0c0d0e0f000ffffffffff001d0df0ad0b44332211efcdab89ffeeddccbbaa9988776655443322110000020000030004000000000000000000000000000000000040d10c008967452301efcdab8967452301efcdab8967452301efcdab8967452301efcdab";
+
     @Test
     public void testParseFixtureHeaders() throws IOException {
         List<Object> headers = loadHeaders();
@@ -89,6 +92,30 @@ public class BlockHeaderV2Test {
 
         Assertions.assertTrue(withOffset, "No fixture header sets the time offset flag");
         Assertions.assertTrue(withoutOffset, "No fixture header leaves the time offset flag clear");
+    }
+
+    /**
+     * The reference implementation reconstructs the time with WrappingAdd and takes it back apart with
+     * WrappingSubtract, so both are mod 2^32. This header carries a wire time of 0xffffff00 with an offset
+     * of 0x200 and the time offset flag set, making the sum wrap.
+     */
+    @Test
+    public void testTimeReconstructionWrapsModulo32Bits() {
+        byte[] serialized = Utils.hexToBytes(WRAPPING_TIME_HEADER_HEX);
+        BlockHeader blockHeader = new BlockHeader(serialized);
+
+        Assertions.assertTrue(blockHeader.isHeaderV2());
+        Assertions.assertEquals(BlockHeader.V2_LENGTH, blockHeader.getLength());
+        Assertions.assertEquals(0x200L, blockHeader.getTimeOffset());
+        Assertions.assertEquals(BlockHeader.FLAG_USE_TIME_OFFSET, blockHeader.getFlags());
+
+        //0xffffff00 + 0x200 wraps to 0x100, rather than running on to 0x100000100
+        Assertions.assertEquals(0x100L, blockHeader.getTime());
+
+        //And back the other way, 0x100 - 0x200 wraps to 0xffffff00 rather than going negative
+        Assertions.assertEquals(0xffffff00L, blockHeader.getTimeOnWire());
+
+        Assertions.assertArrayEquals(serialized, blockHeader.bitcoinSerialize());
     }
 
     @Test
