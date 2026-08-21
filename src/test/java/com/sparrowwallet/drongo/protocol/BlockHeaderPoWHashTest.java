@@ -19,7 +19,7 @@ import java.util.Map;
  * Stage by stage tests for the v2 (BLAKE2b) proof of work hash, driven by block_header_v2.json.
  *
  * The fixture is copied unmodified from src/test/data/block_header_v2.json in the pow_hf_blake2b
- * branch of github.com/luke-jr/bitcoin, at commit 5a3f788e, and records every intermediate of
+ * branch of github.com/luke-jr/bitcoin, at commit 6ba00bc6, and records every intermediate of
  * CBlockHeader::GetHash() in src/primitives/block.cpp on that branch. Asserting each stage means a
  * future divergence names the stage that broke rather than only the final hash.
  *
@@ -45,12 +45,12 @@ public class BlockHeaderPoWHashTest {
      *
      * Produced offline from the first fixture header by setting nBits to 0x2000ffff, a target of roughly
      * 2^248 that lets about one hash in 256 through while staying well inside the regtest proof of work
-     * limit, then grinding nonce2 until both conditions held. nonce2 = 58 was the first to qualify.
+     * limit, then grinding nonce2 until both conditions held. nonce2 = 135 was the first to qualify.
      */
-    private static final String DISCRIMINATING_HEADER_HEX = "000000a01f1e1d1c1b1a191817161514131211100f0e0d0c0b0a0908070605040302010000112233445566778899aabbccddeeff00102030405060708090a0b0c0d0e0f0a8913577ffff00200df0ad0b3a000000efcdab89ffeeddccbbaa998877665544332211005802000003005c000000000000000000000000000000000040d10c008967452301efcdab8967452301efcdab8967452301efcdab8967452301efcdab";
+    private static final String DISCRIMINATING_HEADER_HEX = "000000a01f1e1d1c1b1a191817161514131211100f0e0d0c0b0a0908070605040302010000112233445566778899aabbccddeeff00102030405060708090a0b0c0d0e0f0a8913577ffff00200df0ad0b87000000efcdab89ffeeddccbbaa998877665544332211005802000003001c000000000000000000000000000000000040d10c008967452301efcdab8967452301efcdab8967452301efcdab8967452301efcdab";
     private static final long DISCRIMINATING_NBITS = 0x2000ffffL;
-    private static final String DISCRIMINATING_POW_HASH = "00415804f929ec833683e169539c464cdd80e60b691b300724637a1e43ba5818";
-    private static final String DISCRIMINATING_SHA256D_HASH = "3787e7abe8f0f1fac8bf8b4bad0bc704d6082f1e1cbc63366eefb35fdb5120e8";
+    private static final String DISCRIMINATING_POW_HASH = "00c99031e59e5fc5e70e149025f6c8acd5ac774e882a9e2bf3e0ce82d4a017e8";
+    private static final String DISCRIMINATING_SHA256D_HASH = "9a1c4a7367e691f9db7fd3cd070791149699f503ae4ba7f6a176828b155e963d";
 
     /**
      * SHA256(tag || tag || m_xor_key), where m_xor_key is fed in wire order.
