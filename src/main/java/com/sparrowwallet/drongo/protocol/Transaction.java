@@ -797,7 +797,12 @@ public class Transaction extends ChildMessage {
             bos.write(scriptType.byteValue());
             uint32ToByteStreamLE(0x000000ff & sigHashType, bos);
             uint32ToByteStreamLE(this.version, bos);
+            //The locktime is committed to as five bytes rather than the four it occupies in a
+            //transaction. Four run out on 2106-02-07, and a hardfork widening the field later would
+            //otherwise have to change this message and invalidate every signature made under it. The
+            //fifth byte is zero until something sets it.
             uint32ToByteStreamLE(this.locktime, bos);
+            bos.write(0);
 
             if(!anyoneCanPay) {
                 ByteArrayOutputStream outpoints = new ByteArrayOutputStream();

@@ -15,7 +15,7 @@ import java.util.List;
  * The unified opt-in signature hash, checked against the reference implementation's own vectors.
  *
  * The fixture is copied unmodified from src/test/data/unified_sighash.json in the hf-sighash-opt-in
- * branch, at commit d5109c0f, and covers all four script types: bare and P2SH, segwit v0, taproot key
+ * branch, at commit 4a180066, and covers all four script types: bare and P2SH, segwit v0, taproot key
  * path and tapscript. Hashes there are raw bytes rather than the reversed display order, so they are
  * compared against getBytes() rather than toString().
  *
