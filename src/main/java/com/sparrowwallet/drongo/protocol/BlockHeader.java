@@ -146,6 +146,14 @@ public class BlockHeader extends Message {
         return headerV2;
     }
 
+    /**
+     * The version word as it appears on the wire, with the v2 flag included. Parsing strips the flag into
+     * headerV2, but the proof of work commits to the complete word, so it has to be put back here.
+     */
+    public long getCompleteVersion() {
+        return (headerV2 ? HEADER_V2_FLAG : 0L) | (version & ~HEADER_V2_FLAG);
+    }
+
     public long getVersion() {
         return version;
     }
@@ -275,7 +283,7 @@ public class BlockHeader extends Message {
     public byte[] getPoWHash1() {
         try {
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-            uint32ToByteStreamLE(version, outputStream);
+            uint32ToByteStreamLE(getCompleteVersion(), outputStream);
             //The previous block hash is the one hash fed in display rather than wire order
             outputStream.write(prevBlockHash.getBytes());
             uint32ToByteStreamLE(height, outputStream);
