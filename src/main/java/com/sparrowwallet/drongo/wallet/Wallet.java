@@ -1785,7 +1785,12 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         if(psbt.getPsbtOutputs().stream().anyMatch(o -> o.getSilentPaymentAddress() != null)) {
             List<PSBTInput> psbtInputs = psbt.getPsbtInputs();
             for(int i = 0; i < psbtInputs.size(); i++) {
+                //Compare the base type: the unified opt-in commits to every input and every output, which
+                //is the property silent payments require, so it is as acceptable here as SIGHASH_ALL.
                 SigHash inputSigHash = psbtInputs.get(i).getSigHash();
+                if(inputSigHash != null) {
+                    inputSigHash = inputSigHash.withoutUnified();
+                }
                 if(inputSigHash != null && inputSigHash != SigHash.ALL && inputSigHash != SigHash.DEFAULT) {
                     throw new IllegalStateException("Silent payment outputs require SIGHASH_ALL/DEFAULT signatures. Input at index " + i + " has sighash type: " + inputSigHash);
                 }
