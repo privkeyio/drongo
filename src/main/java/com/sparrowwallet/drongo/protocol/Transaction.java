@@ -794,8 +794,13 @@ public class Transaction extends ChildMessage {
 
         ByteArrayOutputStream bos = new UnsafeByteArrayOutputStream(length == UNKNOWN_LENGTH ? 256 : length + 4);
         try {
-            bos.write(scriptType.byteValue());
-            uint32ToByteStreamLE(0x000000ff & sigHashType, bos);
+            //Laid out as BIP341 lays out its message, so the two can be read side by side. The epoch is
+            //BIP341's, kept so a later revision has the same room to move that BIP341 left itself.
+            bos.write(0x00);
+            //One byte, as BIP341 writes it and as the signature carries it: consensus reads the hash type
+            //from the last byte of the signature, so a wider field could hold a value no verifier would
+            //ever reconstruct.
+            bos.write(sigHashType & 0xff);
             uint32ToByteStreamLE(this.version, bos);
             //The locktime is committed to as five bytes rather than the four it occupies in a
             //transaction. Four run out on 2106-02-07, and a hardfork widening the field later would
@@ -822,14 +827,7 @@ public class Transaction extends ChildMessage {
                 bos.write(Sha256Hash.hash(sequences.toByteArray()));
             }
 
-            if(outType == SigHash.SINGLE.value) {
-                //Unlike both algorithms this replaces, SINGLE with no output at the input's index is invalid
-                //rather than signable, as in BIP341.
-                if(inputIndex >= getOutputs().size()) {
-                    throw new IllegalArgumentException("No output at index " + inputIndex + " to sign with SIGHASH_SINGLE");
-                }
-                bos.write(Sha256Hash.hash(getOutputs().get(inputIndex).bitcoinSerialize()));
-            } else if(outType != SigHash.NONE.value) {
+            if(outType != SigHash.NONE.value && outType != SigHash.SINGLE.value) {
                 //ALL, and every value that is neither NONE nor SINGLE
                 ByteArrayOutputStream outputs = new ByteArrayOutputStream();
                 for(TransactionOutput output : getOutputs()) {
@@ -837,6 +835,10 @@ public class Transaction extends ChildMessage {
                 }
                 bos.write(Sha256Hash.hash(outputs.toByteArray()));
             }
+
+            //Where BIP341 writes its spend type. It has an annex bit to pack in there and this has none to
+            //pack, so the byte carries the script type alone.
+            bos.write(scriptType.byteValue());
 
             //Under ANYONECANPAY the aggregates are absent, so this input's own outpoint, spent output and
             //sequence are committed to directly. Its position deliberately is not, so the input can still be
@@ -860,13 +862,24 @@ public class Transaction extends ChildMessage {
                     byteArraySerialize(annex, annexStream);
                     bos.write(Sha256Hash.hash(annexStream.toByteArray()));
                 }
-                if(scriptType == UnifiedScriptType.TAPSCRIPT) {
-                    //Without the leaf hash a signature made for one script leaf would be valid for any other
-                    //leaf under the same key.
-                    bos.write(tapLeafHash);
-                    bos.write(0x00); //key version
-                    Utils.uint32ToByteStreamLE(codeSeparatorPosition == null ? 0xffffffffL : Integer.toUnsignedLong(codeSeparatorPosition), bos);
+            }
+
+            //The single output, where BIP341 puts it.
+            if(outType == SigHash.SINGLE.value) {
+                //Unlike both algorithms this replaces, SINGLE with no output at the input's index is invalid
+                //rather than signable, as in BIP341.
+                if(inputIndex >= getOutputs().size()) {
+                    throw new IllegalArgumentException("No output at index " + inputIndex + " to sign with SIGHASH_SINGLE");
                 }
+                bos.write(Sha256Hash.hash(getOutputs().get(inputIndex).bitcoinSerialize()));
+            }
+
+            if(scriptType == UnifiedScriptType.TAPSCRIPT) {
+                //Without the leaf hash a signature made for one script leaf would be valid for any other
+                //leaf under the same key.
+                bos.write(tapLeafHash);
+                bos.write(0x00); //key version
+                Utils.uint32ToByteStreamLE(codeSeparatorPosition == null ? 0xffffffffL : Integer.toUnsignedLong(codeSeparatorPosition), bos);
             }
         } catch(IOException e) {
             throw new RuntimeException(e);  // Cannot happen.
