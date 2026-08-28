@@ -155,16 +155,19 @@ public class PSBTInput {
                     }
                     this.nonWitnessUtxo = nonWitnessTx;
                     log.debug("Found input non witness utxo with txid: " + nonWitnessTx.getTxId() + " version " + nonWitnessTx.getVersion() + " size " + nonWitnessTx.getMessageSize() + " locktime " + nonWitnessTx.getLocktime());
-                    for(TransactionInput input: nonWitnessTx.getInputs()) {
+                    for(TransactionInput input : nonWitnessTx.getInputs()) {
                         log.debug(" Transaction input references txid: " + input.getOutpoint().getHash() + " vout " + input.getOutpoint().getIndex() + " with script " + input.getScriptSig());
                     }
-                    for(TransactionOutput output: nonWitnessTx.getOutputs()) {
+                    for(TransactionOutput output : nonWitnessTx.getOutputs()) {
                         log.debug(" Transaction output value: " + output.getValue() + (output.getScript().getToAddress() != null ? " to address " + output.getScript().getToAddress() : "") + " with script hex " + Utils.bytesToHex(output.getScript().getProgram()) + " to script " + output.getScript());
                     }
                     break;
                 case PSBT_IN_WITNESS_UTXO:
                     entry.checkOneByteKey();
                     TransactionOutput witnessTxOutput = new TransactionOutput(null, entry.getData(), 0);
+                    if(witnessTxOutput.getValue() < 0 || witnessTxOutput.getValue() > Transaction.MAX_SATOSHIS) {
+                        throw new PSBTParseException("Witness UTXO amount is out of range: " + witnessTxOutput.getValue());
+                    }
                     if(!P2SH.isScriptType(witnessTxOutput.getScript()) && !P2WPKH.isScriptType(witnessTxOutput.getScript()) && !P2WSH.isScriptType(witnessTxOutput.getScript()) && !P2TR.isScriptType(witnessTxOutput.getScript())) {
                         throw new PSBTParseException("Witness UTXO provided for non-witness or unknown input");
                     }
@@ -355,6 +358,7 @@ public class PSBTInput {
                     log.debug("Found input silent payments tweak");
                     break;
                 case PSBT_IN_PROPRIETARY:
+                    entry.checkOneBytePlusKeyData();
                     this.proprietary.put(Utils.bytesToHex(entry.getKeyData()), Utils.bytesToHex(entry.getData()));
                     log.debug("Found proprietary input " + Utils.bytesToHex(entry.getKeyData()) + ": " + Utils.bytesToHex(entry.getData()));
                     break;
@@ -963,9 +967,8 @@ public class PSBTInput {
         if(getNonWitnessUtxo() != null || getWitnessUtxo() != null) {
             Script signingScript = getSigningScript();
             if(signingScript != null) {
-                if((localSigHash == SigHash.SINGLE || localSigHash == SigHash.ANYONECANPAY_SINGLE) && index >= psbt.getTransaction().getOutputs().size()
-                        && Arrays.asList(NON_WITNESS_TYPES).contains(getScriptType())) {
-                    throw new IllegalStateException("Refusing to sign SIGHASH_SINGLE on legacy input " + index
+                if((localSigHash == SigHash.SINGLE || localSigHash == SigHash.ANYONECANPAY_SINGLE) && index >= psbt.getTransaction().getOutputs().size()) {
+                    throw new IllegalStateException("Refusing to sign SIGHASH_SINGLE on input " + index
                             + " with only " + psbt.getTransaction().getOutputs().size() + " output(s) as it would produce a re-broadcastable signature");
                 }
 
@@ -995,6 +998,12 @@ public class PSBTInput {
 
         if(sigHash == null || sigHash == SigHash.ALL || sigHash == SigHash.DEFAULT) {
             return;
+        }
+
+        int numOutputs = psbt.getTransaction().getOutputs().size();
+        if((sigHash == SigHash.SINGLE || sigHash == SigHash.ANYONECANPAY_SINGLE) && index >= numOutputs) {
+            throw new PSBTSignatureException("Input " + index + " requests " + (sigHash == SigHash.ANYONECANPAY_SINGLE ? "SIGHASH_SINGLE | ANYONECANPAY" : "SIGHASH_SINGLE")
+                    + ", but the transaction has only " + numOutputs + " output(s), so there is no output at that index. The signature would commit to no outputs at all, and could be re-used on a transaction with completely different outputs.");
         }
 
         switch(sigHash) {

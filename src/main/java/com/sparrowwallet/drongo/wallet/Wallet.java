@@ -17,6 +17,7 @@ import com.sparrowwallet.drongo.psbt.PSBTProofException;
 import com.sparrowwallet.drongo.silentpayments.*;
 
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -29,6 +30,8 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
     public static final int SEARCH_LOOKAHEAD = 4000;
     public static final String ALLOW_DERIVATIONS_MATCHING_OTHER_SCRIPT_TYPES_PROPERTY = "com.sparrowwallet.allowDerivationsMatchingOtherScriptTypes";
     public static final String ALLOW_DERIVATIONS_MATCHING_OTHER_NETWORKS_PROPERTY = "com.sparrowwallet.allowDerivationsMatchingOtherNetworks";
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private String name;
     private String label;
@@ -968,7 +971,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
     /**
      * Determines the dust threshold for creating a new change output in this wallet.
      *
-     * @param output The output under consideration
+     * @param output  The output under consideration
      * @param feeRate The fee rate for the transaction creating the change UTXO
      * @return the minimum viable value than the provided change output must have in order to not be dust
      */
@@ -981,8 +984,8 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
      * This is done by calculating the sum of multiplying the size of the output at the current fee rate,
      * and the size of the input needed to spend it in future at the long term fee rate
      *
-     * @param output The output to be added
-     * @param feeRate The transaction's fee rate
+     * @param output          The output to be added
+     * @param feeRate         The transaction's fee rate
      * @param longTermFeeRate The long term minimum fee rate
      * @return The fee that adding this output would add
      */
@@ -1124,7 +1127,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 applySequenceAntiFeeSniping(transaction, selectedUtxos, params.currentBlockHeight());
             }
 
-            for(int i = 1; i < numSets; i+=2) {
+            for(int i = 1; i < numSets; i += 2) {
                 Payment fakeMixPayment;
                 Payment.Type type = Payment.Type.FAKE_MIX;
                 if(policyType == PolicyType.SINGLE_SP) {
@@ -1259,22 +1262,22 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
     }
 
     private void applySequenceAntiFeeSniping(Transaction transaction, Map<BlockTransactionHashIndex, WalletNode> selectedUtxos, int currentBlockHeight) {
-        Random random = new Random();
-        boolean locktime = random.nextInt(2) == 0 || getScriptType() != P2TR || selectedUtxos.keySet().stream().anyMatch(utxo -> utxo.getConfirmations(currentBlockHeight) > 65535);
+        boolean locktime = SECURE_RANDOM.nextInt(2) == 0 || getScriptType() != P2TR
+                || selectedUtxos.keySet().stream().anyMatch(utxo -> utxo.getConfirmations(currentBlockHeight) > 65535 || utxo.getConfirmations(currentBlockHeight) <= 0);
 
         if(locktime) {
             transaction.setLocktime(currentBlockHeight);
-            if(random.nextInt(10) == 0) {
-                transaction.setLocktime(Math.max(0, currentBlockHeight - random.nextInt(100)));
+            if(SECURE_RANDOM.nextInt(10) == 0) {
+                transaction.setLocktime(Math.max(0, currentBlockHeight - SECURE_RANDOM.nextInt(100)));
             }
         } else {
             transaction.setLocktime(0);
-            int inputIndex = random.nextInt(transaction.getInputs().size());
+            int inputIndex = SECURE_RANDOM.nextInt(transaction.getInputs().size());
             TransactionInput txInput = transaction.getInputs().get(inputIndex);
             BlockTransactionHashIndex utxo = selectedUtxos.keySet().stream().filter(ref -> ref.getHash().equals(txInput.getOutpoint().getHash()) && ref.getIndex() == txInput.getOutpoint().getIndex()).findFirst().orElseThrow();
             txInput.setSequenceNumber(utxo.getConfirmations(currentBlockHeight));
-            if(random.nextInt(10) == 0) {
-                txInput.setSequenceNumber(Math.max(0, txInput.getSequenceNumber() - random.nextInt(100)));
+            if(SECURE_RANDOM.nextInt(10) == 0) {
+                txInput.setSequenceNumber(Math.max(1, txInput.getSequenceNumber() - SECURE_RANDOM.nextInt(100)));
             }
         }
     }
@@ -1339,7 +1342,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                     Map<BlockTransactionHashIndex, WalletNode> selectedInputsMap = new LinkedHashMap<>();
                     List<BlockTransactionHashIndex> shuffledInputs = new ArrayList<>(selectedInputs);
                     if(utxoSelector.shuffleInputs()) {
-                        Collections.shuffle(shuffledInputs);
+                        Collections.shuffle(shuffledInputs, SECURE_RANDOM);
                     }
                     for(BlockTransactionHashIndex shuffledInput : shuffledInputs) {
                         selectedInputsMap.put(shuffledInput, availableTxos.get(shuffledInput));
@@ -1434,6 +1437,10 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
     private boolean isNotificationChange(Map<Sha256Hash, BlockTransaction> walletTransactions, Sha256Hash txId) {
         BlockTransaction utxoBlkTx = walletTransactions.get(txId);
+        if(utxoBlkTx == null) {
+            return false;
+        }
+
         try {
             PaymentCode.getOpReturnData(utxoBlkTx.getTransaction());
             return true;
@@ -1448,7 +1455,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
      * Determines the maximum total amount this wallet can send for the number and type of addresses at the given fee rate
      *
      * @param paymentAddresses the addresses to sent to (amounts are irrelevant)
-     * @param feeRate the fee rate in sats/vB
+     * @param feeRate          the fee rate in sats/vB
      * @return the maximum spendable amount (can be negative if the fee is higher than the combined UTXO value)
      */
     public long getMaxSpendable(List<Address> paymentAddresses, double feeRate, Map<BlockTransactionHashIndex, WalletNode> availableTxos) {
@@ -1522,8 +1529,10 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
             Wallet signingWallet = walletNode.getWallet();
             Map<ECKey, Keystore> keystoreKeysForNode = signingWallet.getKeystores().stream()
                     .collect(Collectors.toMap(keystore -> signingWallet.getScriptType().getOutputKey(signingWallet.getPolicyType(), keystore.getPubKey(walletNode)), Function.identity(),
-                    (u, v) -> { throw new IllegalStateException("Duplicate keys from different keystores for node " + walletNode); },
-                    LinkedHashMap::new));
+                            (u, v) -> {
+                                throw new IllegalStateException("Duplicate keys from different keystores for node " + walletNode);
+                            },
+                            LinkedHashMap::new));
 
             Map<ECKey, TransactionSignature> keySignatureMap = new LinkedHashMap<>();
 
@@ -1758,8 +1767,10 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
             Wallet signingWallet = walletNode.getWallet();
             Map<ECKey, Keystore> keystoreKeysForNode = signingWallet.getKeystores().stream()
                     .collect(Collectors.toMap(keystore -> signingWallet.getScriptType().getOutputKey(signingWallet.getPolicyType(), keystore.getPubKey(walletNode)), Function.identity(),
-                    (u, v) -> { throw new IllegalStateException("Duplicate keys from different keystores for node " + walletNode); },
-                    LinkedHashMap::new));
+                            (u, v) -> {
+                                throw new IllegalStateException("Duplicate keys from different keystores for node " + walletNode);
+                            },
+                            LinkedHashMap::new));
 
             Map<ECKey, TransactionSignature> keySignatureMap;
             if(psbt.isFinalized() || psbtInput.isTaproot()) {
@@ -2195,7 +2206,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         int numSigs;
         try {
             numSigs = defaultPolicy.getNumSignaturesRequired();
-        } catch (Exception e) {
+        } catch(Exception e) {
             throw new InvalidWalletException("Cannot determine number of required signatures to sign a transaction");
         }
 
@@ -2314,7 +2325,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                     try {
                         int count = Integer.parseInt(remainder.trim());
                         max = Math.max(max, count);
-                    } catch (NumberFormatException e) {
+                    } catch(NumberFormatException e) {
                         //ignore, no terminating number
                     }
                 }

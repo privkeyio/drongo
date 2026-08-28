@@ -27,11 +27,14 @@ public class OutputDescriptor {
 
     public static final Pattern XPUB_PATTERN = Pattern.compile("(\\[[^\\]]+\\])?(.(?:pub|prv)[^/\\,)]{100,112})(/[/\\d*'hH<>;]+)?");
     private static final Pattern PUBKEY_PATTERN = Pattern.compile("(\\[[^\\]]+\\])?(0[23][0-9a-fA-F]{64})");
-    private static final Pattern MULTI_PATTERN = Pattern.compile("multi\\((\\d+)");
+    private static final Pattern MULTI_PATTERN = Pattern.compile("multi\\(\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
+    public static final Pattern LEGACY_MULTI_PATTERN = Pattern.compile("(?<!sorted)multi\\(\\s*\\d+", Pattern.CASE_INSENSITIVE);
     public static final Pattern KEY_ORIGIN_PATTERN = Pattern.compile("\\[([A-Fa-f0-9]{8})([/\\d'hH]+)?\\]");
     private static final Pattern MULTIPATH_PATTERN = Pattern.compile("<([\\d*'hH;]+)>");
     private static final Pattern CHECKSUM_PATTERN = Pattern.compile("#([" + CHECKSUM_CHARSET + "]{8})$");
     private static final Pattern ANNOTATION_PATTERN = Pattern.compile("([a-zA-Z]+)=([0-9]+)");
+
+    private static final int THRESHOLD_ABSENT = -1;
 
     public static final String ANNOTATION_BLOCK_HEIGHT = "bh";
     public static final String ANNOTATION_GAP_LIMIT = "gl";
@@ -325,7 +328,7 @@ public class OutputDescriptor {
         wallet.setPolicyType(isMultisig() || isCosigner() ? PolicyType.MULTI_HD : PolicyType.SINGLE_HD);
         wallet.setScriptType(scriptType);
 
-        for(Map.Entry<ExtendedKey,KeyDerivation> extKeyEntry : extendedPublicKeys.entrySet()) {
+        for(Map.Entry<ExtendedKey, KeyDerivation> extKeyEntry : extendedPublicKeys.entrySet()) {
             ExtendedKey xpub = extKeyEntry.getKey();
             Keystore keystore = new Keystore();
             if(extendedMasterPrivateKeys.containsKey(xpub)) {
@@ -551,7 +554,7 @@ public class OutputDescriptor {
                 throw new IllegalArgumentException("Invalid multisig threshold of " + threshold + " in descriptor");
             }
         } else {
-            return 1;
+            return THRESHOLD_ABSENT;
         }
     }
 
@@ -613,11 +616,15 @@ public class OutputDescriptor {
             }
         }
 
-        if(MULTI_PATTERN.matcher(descriptor).find() && (multisigThreshold < 1 || multisigThreshold > keyDerivationMap.size())) {
+        if(multisigThreshold == THRESHOLD_ABSENT && keyDerivationMap.size() > 1) {
+            throw new IllegalArgumentException("Cannot determine the multisig threshold in a descriptor providing " + keyDerivationMap.size() + " keys");
+        }
+
+        if(multisigThreshold != THRESHOLD_ABSENT && (multisigThreshold < 1 || multisigThreshold > keyDerivationMap.size())) {
             throw new IllegalArgumentException("Invalid multisig threshold of " + multisigThreshold + " in a descriptor providing " + keyDerivationMap.size() + " key" + (keyDerivationMap.size() == 1 ? "" : "s"));
         }
 
-        return new OutputDescriptor(scriptType, multisigThreshold, keyDerivationMap, keyChildDerivationMap, mapExtendedPublicKeyLabels, masterPrivateKeyMap, annotations);
+        return new OutputDescriptor(scriptType, Math.max(multisigThreshold, 1), keyDerivationMap, keyChildDerivationMap, mapExtendedPublicKeyLabels, masterPrivateKeyMap, annotations);
     }
 
     private static OutputDescriptor parseSilentPaymentDescriptor(String descriptor, Map<String, Integer> annotations) {
@@ -634,7 +641,8 @@ public class OutputDescriptor {
         }
     }
 
-    private record KeyDerivationAndKey(KeyDerivation keyDerivation, String key) {}
+    private record KeyDerivationAndKey(KeyDerivation keyDerivation, String key) {
+    }
 
     private static KeyDerivationAndKey parseKeyOrigin(String arg) {
         KeyDerivation keyDerivation = new KeyDerivation(null, (String)null);
@@ -833,8 +841,7 @@ public class OutputDescriptor {
         return ret.toString();
     }
 
-    private static BigInteger polyMod(BigInteger c, int val)
-    {
+    private static BigInteger polyMod(BigInteger c, int val) {
         byte c0 = c.shiftRight(35).byteValue();
         c = c.and(new BigInteger("7ffffffff", 16)).shiftLeft(5).xor(BigInteger.valueOf(val));
 

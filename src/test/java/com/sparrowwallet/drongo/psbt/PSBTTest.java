@@ -8,6 +8,7 @@ import com.sparrowwallet.drongo.address.P2PKHAddress;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.Miniscript;
 import com.sparrowwallet.drongo.policy.Policy;
+import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.silentpayments.SilentPaymentAddress;
 import com.sparrowwallet.drongo.wallet.Wallet;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -1144,6 +1146,37 @@ public class PSBTTest {
     }
 
     @Test
+    public void publicCopyClearsOutputDnssecProof() throws PSBTParseException {
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.wrap("75ddabb27b8845f5247975c8a5ba7c6f336c4570708ebe230caf6db5217ae858"), 0, new Script(new byte[0]));
+        transaction.addOutput(100000L, new Script(Utils.hexToBytes("0014d85c2b71d0060b09c9886aeb815e50991dda124d")));
+
+        PSBT psbt = new PSBT(transaction);
+        psbt.getPsbtOutputs().getFirst().setDnssecProof(Map.of("bob@example.com", Utils.hexToBytes("aabbccdd")));
+
+        //The proof is serialized regardless of PSBT version, so it survives an ordinary copy
+        Assertions.assertNotNull(PSBT.fromString(psbt.toBase64String()).getPsbtOutputs().getFirst().getDnssecProof());
+
+        PSBT publicCopy = PSBT.fromString(psbt.getPublicCopy().toBase64String());
+        Assertions.assertNull(publicCopy.getPsbtOutputs().getFirst().getDnssecProof());
+        Assertions.assertNotNull(psbt.getPsbtOutputs().getFirst().getDnssecProof());
+    }
+
+    @Test
+    public void publicCopyClearsOutputSilentPaymentInfo() throws PSBTParseException {
+        String strPsbt = "cHNidP8B+wQCAAAAAQIEAgAAAAEEBAEAAAABBQQCAAAAAQYBAwABDiAlbK6m2hWAb7hW7a50mI1EDHqxtcCGHsgR0ZCSdHudHAEPBAAAAAABAR+ghgEAAAAAABYAFPja92rYA7DvqV1s/4ruCJHTrxyMARAE/v///yIGA9NX98BxjyR44/2PjMwnKd3YwMyusfArGBpvRNQ7n42NAAEDBAEAAAAiHQLQKf+W3iy894K+Q1nEhiDqkrzda+8DK5UVi5GhaT+0+CECVRZOeSbVDVKgn/mQZHpelcHbG/xophb7wtohOSf5i/8iHgLQKf+W3iy894K+Q1nEhiDqkrzda+8DK5UVi5GhaT+0+EDB1n84eIK/gXkV6hWCHWTVs4NcH8BcVYzj2CSSoX2QjBBIfbub3cEIDIwtnBlxsmYIPGkFTiIZPyRBKKxmc35gAAEDCFDDAAAAAAAAAQQiUSBVuRZLw33Ib1uJNhaCqjCItbP6U9rbQ+lfG9ETm7HANQEJQgLQKf+W3iy894K+Q1nEhiDqkrzda+8DK5UVi5GhaT+0+AP1JENIUgFlZrxF0fpqXFoYYs3ZM/FchDtCcjgi9SUyNwEKBAEAAAAAAQMIyK8AAAAAAAABBBYAFOPDEMwq86xuYsrkvSPj7lK54clZIgID01f3wHGPJHjj/Y+MzCcp3djAzK6x8CsYGm9E1DufjY0MAAAAAAAAAAAAAAABAA==";
+        PSBT psbt = PSBT.fromString(strPsbt);
+        Assertions.assertNotNull(psbt.getPsbtOutputs().getFirst().getSilentPaymentAddress());
+        Assertions.assertNotNull(psbt.getPsbtOutputs().getFirst().getSilentPaymentLabel());
+
+        PSBT publicCopy = PSBT.fromString(psbt.getPublicCopy().toBase64String());
+        Assertions.assertNull(publicCopy.getPsbtOutputs().getFirst().getSilentPaymentAddress());
+        Assertions.assertNull(publicCopy.getPsbtOutputs().getFirst().getSilentPaymentLabel());
+        Assertions.assertNotNull(psbt.getPsbtOutputs().getFirst().getSilentPaymentAddress());
+    }
+
+    @Test
     public void sighashSingleLegacyMagicOneBugRefusedAtSignTime() {
         ECKey victimKey = new ECKey();
         P2PKHAddress victimAddr = new P2PKHAddress(victimKey.getPubKeyHash());
@@ -1173,6 +1206,160 @@ public class PSBTTest {
         Sha256Hash magicOne = Sha256Hash.wrap("0100000000000000000000000000000000000000000000000000000000000000");
         Assertions.assertEquals(magicOne, unsigned.hashForLegacySignature(1, victimSpk, SigHash.SINGLE),
                 "underlying legacy hash function still returns the constant - guard is the sole defence at sign time");
+    }
+
+    @Test
+    public void sighashSingleOutOfRangeRefusedOnSegwitInput() {
+        ECKey victimKey = new ECKey();
+        Script victimSpk = ScriptType.P2WPKH.getOutputScript(victimKey.getPubKeyHash());
+        ECKey attackerKey = new ECKey();
+        Script attackerSpk = ScriptType.P2WPKH.getOutputScript(attackerKey.getPubKeyHash());
+
+        Transaction priorTx0 = new Transaction();
+        priorTx0.addInput(Sha256Hash.ZERO_HASH, 0L, new Script(new byte[0]));
+        priorTx0.addOutput(100_000L, attackerSpk);
+
+        Transaction priorTx1 = new Transaction();
+        priorTx1.addInput(Sha256Hash.ZERO_HASH, 0L, new Script(new byte[0]));
+        priorTx1.addOutput(200_000L, victimSpk);
+
+        //A coordinator presents two inputs and a single output, placing the victim's input beyond the last output
+        Transaction unsigned = new Transaction();
+        unsigned.addInput(priorTx0.getTxId(), 0, new Script(new byte[0]));
+        unsigned.addInput(priorTx1.getTxId(), 0, new Script(new byte[0]));
+        unsigned.addOutput(290_000L, victimSpk);
+
+        PSBT psbt = new PSBT(unsigned);
+        psbt.getPsbtInputs().get(0).setWitnessUtxo(priorTx0.getOutputs().getFirst());
+        PSBTInput trapInput = psbt.getPsbtInputs().get(1);
+        trapInput.setWitnessUtxo(priorTx1.getOutputs().getFirst());
+        trapInput.setSigHash(SigHash.SINGLE);
+
+        IllegalStateException thrown = Assertions.assertThrows(IllegalStateException.class, () -> trapInput.sign(victimKey));
+        Assertions.assertTrue(thrown.getMessage().contains("re-broadcastable"), "guard message should describe the risk");
+        Assertions.assertTrue(trapInput.getPartialSignatures().isEmpty(), "no signature should be recorded for a refused input");
+
+        //Why the guard is required: BIP143 leaves hashOutputs zeroed when the input index is out of range, so the sighash
+        //is identical over an entirely different set of outputs and any signature made over it is freely re-usable
+        Script scriptCode = trapInput.getSigningScript();
+        Transaction swapped = new Transaction();
+        swapped.addInput(priorTx0.getTxId(), 0, new Script(new byte[0]));
+        swapped.addInput(priorTx1.getTxId(), 0, new Script(new byte[0]));
+        swapped.addOutput(295_000L, attackerSpk);
+        Assertions.assertEquals(unsigned.hashForWitnessSignature(1, scriptCode, 200_000L, SigHash.SINGLE),
+                swapped.hashForWitnessSignature(1, scriptCode, 200_000L, SigHash.SINGLE),
+                "the witness sighash commits to no output at all when the input index is out of range");
+    }
+
+    @Test
+    public void sighashSingleOutOfRangeRefusedOnEveryScriptType() {
+        ECKey key = new ECKey();
+        Script witnessScript = ScriptType.MULTISIG.getOutputScript(1, List.of(key));
+        Map<String, Script> scriptPubKeys = new LinkedHashMap<>();
+        scriptPubKeys.put("P2PKH", ScriptType.P2PKH.getOutputScript(key.getPubKeyHash()));
+        scriptPubKeys.put("MULTISIG", witnessScript);
+        scriptPubKeys.put("P2WPKH", ScriptType.P2WPKH.getOutputScript(key.getPubKeyHash()));
+        scriptPubKeys.put("P2SH_P2WPKH", ScriptType.P2SH_P2WPKH.getOutputScript(PolicyType.SINGLE_HD, key));
+        scriptPubKeys.put("P2WSH", ScriptType.P2WSH.getOutputScript(witnessScript));
+        scriptPubKeys.put("P2TR", ScriptType.P2TR.getOutputScript(key.getPubKeyXCoord()));
+
+        for(Map.Entry<String, Script> entry : scriptPubKeys.entrySet()) {
+            Transaction priorTx = new Transaction();
+            priorTx.addInput(Sha256Hash.ZERO_HASH, 0L, new Script(new byte[0]));
+            priorTx.addOutput(200_000L, entry.getValue());
+
+            Transaction unsigned = new Transaction();
+            unsigned.addInput(Sha256Hash.ZERO_HASH, 1L, new Script(new byte[0]));
+            unsigned.addInput(priorTx.getTxId(), 0, new Script(new byte[0]));
+            unsigned.addOutput(190_000L, entry.getValue());
+
+            PSBT psbt = new PSBT(unsigned);
+            PSBTInput trapInput = psbt.getPsbtInputs().get(1);
+            trapInput.setWitnessUtxo(priorTx.getOutputs().getFirst());
+            trapInput.setRedeemScript(ScriptType.P2WPKH.getOutputScript(key.getPubKeyHash()));
+            trapInput.setWitnessScript(witnessScript);
+            trapInput.setSigHash(SigHash.SINGLE);
+
+            IllegalStateException thrown = Assertions.assertThrows(IllegalStateException.class, () -> trapInput.sign(key), entry.getKey() + " must refuse an out of range SIGHASH_SINGLE");
+            Assertions.assertTrue(thrown.getMessage().startsWith("Refusing to sign SIGHASH_SINGLE on input 1"), entry.getKey() + " must be refused by the sighash guard, not by an unrelated failure");
+        }
+    }
+
+    @Test
+    public void anyoneCanPaySighashSingleOutOfRangeRefused() {
+        ECKey key = new ECKey();
+        Script spk = ScriptType.P2WPKH.getOutputScript(key.getPubKeyHash());
+
+        Transaction priorTx = new Transaction();
+        priorTx.addInput(Sha256Hash.ZERO_HASH, 0L, new Script(new byte[0]));
+        priorTx.addOutput(200_000L, spk);
+
+        Transaction unsigned = new Transaction();
+        unsigned.addInput(Sha256Hash.ZERO_HASH, 1L, new Script(new byte[0]));
+        unsigned.addInput(priorTx.getTxId(), 0, new Script(new byte[0]));
+        unsigned.addOutput(190_000L, spk);
+
+        PSBT psbt = new PSBT(unsigned);
+        PSBTInput trapInput = psbt.getPsbtInputs().get(1);
+        trapInput.setWitnessUtxo(priorTx.getOutputs().getFirst());
+        trapInput.setSigHash(SigHash.ANYONECANPAY_SINGLE);
+
+        IllegalStateException thrown = Assertions.assertThrows(IllegalStateException.class, () -> trapInput.sign(key));
+        Assertions.assertTrue(thrown.getMessage().startsWith("Refusing to sign SIGHASH_SINGLE on input 1"));
+    }
+
+    @Test
+    public void sighashSingleInRangeSegwitInputStillSigns() {
+        ECKey key = new ECKey();
+        Script spk = ScriptType.P2WPKH.getOutputScript(key.getPubKeyHash());
+
+        Transaction priorTx0 = new Transaction();
+        priorTx0.addInput(Sha256Hash.ZERO_HASH, 0L, new Script(new byte[0]));
+        priorTx0.addOutput(100_000L, spk);
+
+        Transaction priorTx1 = new Transaction();
+        priorTx1.addInput(Sha256Hash.ZERO_HASH, 0L, new Script(new byte[0]));
+        priorTx1.addOutput(200_000L, spk);
+
+        //The second input has a matching output at the same index, which is the legitimate SIGHASH_SINGLE use
+        Transaction unsigned = new Transaction();
+        unsigned.addInput(priorTx0.getTxId(), 0, new Script(new byte[0]));
+        unsigned.addInput(priorTx1.getTxId(), 0, new Script(new byte[0]));
+        unsigned.addOutput(95_000L, spk);
+        unsigned.addOutput(190_000L, spk);
+
+        PSBT psbt = new PSBT(unsigned);
+        psbt.getPsbtInputs().get(0).setWitnessUtxo(priorTx0.getOutputs().getFirst());
+        PSBTInput signingInput = psbt.getPsbtInputs().get(1);
+        signingInput.setWitnessUtxo(priorTx1.getOutputs().getFirst());
+        signingInput.setSigHash(SigHash.SINGLE);
+
+        Assertions.assertTrue(signingInput.sign(key));
+        Assertions.assertDoesNotThrow(signingInput::verifySignatures);
+    }
+
+    @Test
+    public void verifySigHashesDescribesTheMissingOutput() {
+        ECKey key = new ECKey();
+        Script spk = ScriptType.P2WPKH.getOutputScript(key.getPubKeyHash());
+
+        Transaction priorTx = new Transaction();
+        priorTx.addInput(Sha256Hash.ZERO_HASH, 0L, new Script(new byte[0]));
+        priorTx.addOutput(200_000L, spk);
+
+        Transaction unsigned = new Transaction();
+        unsigned.addInput(Sha256Hash.ZERO_HASH, 1L, new Script(new byte[0]));
+        unsigned.addInput(priorTx.getTxId(), 0, new Script(new byte[0]));
+        unsigned.addOutput(190_000L, spk);
+
+        PSBT psbt = new PSBT(unsigned);
+        psbt.getPsbtInputs().get(1).setWitnessUtxo(priorTx.getOutputs().getFirst());
+        psbt.getPsbtInputs().get(1).setSigHash(SigHash.SINGLE);
+
+        PSBTSignatureException ex = Assertions.assertThrows(PSBTSignatureException.class, psbt::verifySigHashes);
+        Assertions.assertTrue(ex.getMessage().contains("Input 1"));
+        Assertions.assertTrue(ex.getMessage().contains("no output at that index"), "the warning must not claim a same index output exists");
+        Assertions.assertTrue(ex.getMessage().contains("commit to no outputs at all"));
     }
 
     @Test
@@ -1460,13 +1647,213 @@ public class PSBTTest {
     }
 
     @Test
-    public void truncatedPsbtDoesNotMatchSourceTransaction() throws PSBTParseException {
-        Transaction tx = buildMatchesTransaction(new byte[0], 12345L);
-        byte[] serialized = new PSBT(tx).serialize();
-        PSBT truncatedPsbt = new PSBT(Arrays.copyOf(serialized, serialized.length - 1), false);
+    public void truncatedPsbtIsRejected() {
+        byte[] serialized = new PSBT(buildMatchesTransaction(new byte[0], 12345L)).serialize();
 
-        Assertions.assertTrue(truncatedPsbt.getPsbtOutputs().isEmpty(), "Truncated PSBT should parse with no outputs");
-        Assertions.assertFalse(truncatedPsbt.matches(tx));
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(Arrays.copyOf(serialized, serialized.length - 1), false));
+        Assertions.assertTrue(e.getMessage().contains("PSBT is truncated"), e.getMessage());
+    }
+
+    @Test
+    public void truncatedV0PsbtIsRejected() throws PSBTParseException {
+        byte[] serialized = PSBT.fromString(MATCHES_V0_PSBT).serialize();
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(Arrays.copyOf(serialized, serialized.length - 1), false));
+        Assertions.assertTrue(e.getMessage().contains("PSBT is truncated"), e.getMessage());
+    }
+
+    @Test
+    public void everyV0TruncationIsRejected() throws PSBTParseException {
+        PSBT psbt = PSBT.fromString(TWO_INPUTS_TWO_OUTPUTS_PSBT);
+        Assertions.assertEquals(0, psbt.getPsbtVersion());
+        assertEveryTruncationIsRejected(psbt.serialize());
+    }
+
+    @Test
+    public void everyV2TruncationIsRejected() throws PSBTParseException {
+        //TWO_INPUTS_TWO_OUTPUTS_PSBT is a BIP174 v0 vector, so convert it to exercise the count entries and per-input outpoints
+        PSBT psbt = PSBT.fromString(TWO_INPUTS_TWO_OUTPUTS_PSBT);
+        psbt.convertVersion(2);
+        Assertions.assertEquals(2, psbt.getPsbtVersion());
+        assertEveryTruncationIsRejected(psbt.serialize());
+    }
+
+    @Test
+    public void psbtShorterThanHeaderIsRejected() {
+        byte[] header = Utils.hexToBytes("70736274");
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(header, false));
+        Assertions.assertTrue(e.getMessage().contains("PSBT is truncated"), e.getMessage());
+    }
+
+    @Test
+    public void entryLengthBeyondRemainingBytesIsRejected() {
+        //A key length of 0x7fffffff was previously allocated before the remaining bytes were checked
+        byte[] oversized = Utils.hexToBytes("70736274fffeffffff7f");
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(oversized, false));
+        Assertions.assertTrue(e.getMessage().contains("cannot read 2147483647 bytes of entry key"), e.getMessage());
+    }
+
+    @Test
+    public void entryLengthBeyondIntRangeIsRejected() {
+        //A key length of 0xffffffff previously read as -1, giving a NegativeArraySizeException
+        byte[] beyondIntRange = Utils.hexToBytes("70736274fffeffffffff");
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(beyondIntRange, false));
+        Assertions.assertTrue(e.getMessage().contains("Data too long:4294967295"), e.getMessage());
+    }
+
+    @Test
+    public void malformedEntryDataThrowsPSBTParseException() {
+        //A structurally valid PSBT whose witness utxo entry holds four bytes reached TransactionOutput.parse,
+        //which threw a ProtocolException straight out of the constructor
+        String hex = Utils.bytesToHex(new PSBT(buildMatchesTransaction(new byte[0], 12345L)).serialize());
+        String prevTxidEntry = "010e20";
+        Assertions.assertEquals(hex.indexOf(prevTxidEntry), hex.lastIndexOf(prevTxidEntry), "The previous txid entry must be uniquely identifiable in the serialized PSBT");
+        byte[] spliced = Utils.hexToBytes(hex.replace(prevTxidEntry, "01010400000000" + prevTxidEntry));
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(spliced, false));
+        Assertions.assertTrue(e.getMessage().contains("Invalid data in PSBT"), e.getMessage());
+    }
+
+    @Test
+    public void proprietaryKeyWithoutKeyDataIsRejected() {
+        //A proprietary key is 0xfc plus an identifier and subtype, so a bare type byte left keyData null and gave an NPE
+        String hex = Utils.bytesToHex(new PSBT(buildMatchesTransaction(new byte[0], 12345L)).serialize());
+        byte[] bareProprietaryKey = Utils.hexToBytes(hex.replace("70736274ff", "70736274ff" + "01fc00"));
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(bareProprietaryKey, false));
+        Assertions.assertTrue(e.getMessage().contains("one byte plus key data"), e.getMessage());
+    }
+
+    @Test
+    public void bip32DerivationMustBeAWholeNumberOfChildNumbers() {
+        //Nine bytes of derivation data underflowed the buffer on the third read
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> PSBTEntry.parseKeyDerivation(Utils.hexToBytes("00000000" + "010203040506070809")));
+        Assertions.assertTrue(e.getMessage().contains("Invalid BIP32 derivation of 9 bytes"), e.getMessage());
+    }
+
+    @Test
+    public void invalidPublicKeyThrowsPSBTParseException() {
+        //ECKey.fromPublicOnly throws an IllegalArgumentException, which is neither a ProtocolException nor a VerificationException
+        String hex = Utils.bytesToHex(new PSBT(buildMatchesTransaction(new byte[0], 12345L)).serialize());
+        String outputAmountEntry = "0103083930000000000000";
+        Assertions.assertEquals(hex.indexOf(outputAmountEntry), hex.lastIndexOf(outputAmountEntry), "The output amount entry must be uniquely identifiable in the serialized PSBT");
+        byte[] invalidPublicKey = Utils.hexToBytes(hex.replace(outputAmountEntry, "2202" + "00".repeat(33) + "04" + "00000000" + outputAmountEntry));
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(invalidPublicKey, false));
+        Assertions.assertTrue(e.getMessage().contains("Invalid data in PSBT"), e.getMessage());
+    }
+
+    @Test
+    public void unterminatedGlobalMapIsRejected() {
+        //A PSBT truncated before the global separator has no transaction in either version, so it is a truncation rather than a missing field
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(Utils.hexToBytes("70736274ff"), false));
+        Assertions.assertTrue(e.getMessage().contains("the global map is not terminated"), e.getMessage());
+    }
+
+    @Test
+    public void unverifiableUnsignedTransactionThrowsPSBTParseException() {
+        //An unsigned transaction with no outputs fails Transaction.verify(), which threw a VerificationException
+        String unsignedTx = "02000000" + "01" + "aa00000000000000000000000000000000000000000000000000000000000011" + "01000000" + "00" + "ffffffff" + "00" + "00000000";
+        byte[] noOutputs = Utils.hexToBytes("70736274ff" + "010033" + unsignedTx + "00");
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(noOutputs, false));
+        Assertions.assertTrue(e.getMessage().contains("Invalid data in PSBT"), e.getMessage());
+    }
+
+    @Test
+    public void dnssecProofNameLengthIsUnsigned() {
+        //The name length was read as a signed byte, so a high byte gave a negative length and a NegativeArraySizeException
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> PSBTEntry.parseDnssecProof(Utils.hexToBytes("80010203")));
+        Assertions.assertTrue(e.getMessage().contains("Invalid string length of 128"), e.getMessage());
+    }
+
+    @Test
+    public void compactIntBoundariesUseTheShortestEncoding() {
+        Assertions.assertEquals("fc", Utils.bytesToHex(PSBTEntry.writeCompactInt(0xfcL)));
+        Assertions.assertEquals("fdfd00", Utils.bytesToHex(PSBTEntry.writeCompactInt(0xfdL)));
+        //0xffff and 0xffffffff are the last values the three and five byte forms can hold, and were previously written in the next widest form
+        Assertions.assertEquals("fdffff", Utils.bytesToHex(PSBTEntry.writeCompactInt(0xffffL)));
+        Assertions.assertEquals("fe00000100", Utils.bytesToHex(PSBTEntry.writeCompactInt(0x10000L)));
+        Assertions.assertEquals("feffffffff", Utils.bytesToHex(PSBTEntry.writeCompactInt(0xffffffffL)));
+        Assertions.assertEquals("ff0000000001000000", Utils.bytesToHex(PSBTEntry.writeCompactInt(0x100000000L)));
+    }
+
+    @Test
+    public void compactIntRoundTripsUpToIntRange() throws PSBTParseException {
+        for(long value : List.of(0L, 1L, 0xfcL, 0xfdL, 0xffL, 0x100L, 0xfffeL, 0xffffL, 0x10000L, (long)Integer.MAX_VALUE)) {
+            ByteBuffer buffer = ByteBuffer.wrap(PSBTEntry.writeCompactInt(value));
+            Assertions.assertEquals(value, PSBTEntry.readCompactInt(buffer), "Compact size integer " + value + " must round trip");
+            Assertions.assertFalse(buffer.hasRemaining(), "Compact size integer " + value + " must be written in the shortest form");
+        }
+    }
+
+    @Test
+    public void declaredInputCountBeyondIntRangeIsRejected() {
+        //An input count of 0x100000001 truncates to a single input in an int
+        byte[] inflated = serializeWithInputCountEntry("010409ff0100000001000000");
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(inflated, false));
+        Assertions.assertTrue(e.getMessage().contains("4294967297 inputs"), e.getMessage());
+    }
+
+    @Test
+    public void emptyInputCountIsRejected() {
+        byte[] empty = serializeWithInputCountEntry("010400");
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(empty, false));
+        Assertions.assertTrue(e.getMessage().contains("PSBT input count must be at least one"), e.getMessage());
+    }
+
+    @Test
+    public void outputAmountOutOfRangeIsRejected() {
+        byte[] excessive = new PSBT(buildMatchesTransaction(new byte[0], Transaction.MAX_SATOSHIS + 1)).serialize();
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(excessive, false));
+        Assertions.assertTrue(e.getMessage().contains("PSBT output amount is out of range"), e.getMessage());
+
+        byte[] negative = new PSBT(buildMatchesTransaction(new byte[0], -12345L)).serialize();
+        e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(negative, false));
+        Assertions.assertTrue(e.getMessage().contains("PSBT output amount is out of range"), e.getMessage());
+    }
+
+    @Test
+    public void witnessUtxoAmountOutOfRangeIsRejected() throws PSBTParseException {
+        PSBT psbt = PSBT.fromString(TWO_INPUTS_TWO_OUTPUTS_PSBT);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(1);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, Transaction.MAX_SATOSHIS + 1, psbtInput.getWitnessUtxo().getScript()));
+
+        String tampered = psbt.toBase64String();
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> PSBT.fromString(tampered));
+        Assertions.assertTrue(e.getMessage().contains("Witness UTXO amount is out of range"), e.getMessage());
+    }
+
+    @Test
+    public void unsupportedPsbtVersionIsRejected() {
+        PSBT psbt = new PSBT(buildMatchesTransaction(new byte[0], 12345L));
+        psbt.setVersion(3);
+        byte[] serialized = psbt.serialize();
+
+        Exception e = Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(serialized, false));
+        Assertions.assertTrue(e.getMessage().contains("PSBT version 3 is not supported"), e.getMessage());
+    }
+
+    @Test
+    public void overflowingFeeIsUnknown() {
+        Transaction tx = new Transaction();
+        tx.setVersion(2);
+        for(int i = 0; i < 5000; i++) {
+            tx.addInput(Sha256Hash.wrap(Utils.hexToBytes("aa00000000000000000000000000000000000000000000000000000000000011")), i, new Script(new byte[0]));
+        }
+        tx.addOutput(12345L, CHANGE_SCRIPT);
+
+        PSBT psbt = new PSBT(tx);
+        for(PSBTInput psbtInput : psbt.getPsbtInputs()) {
+            psbtInput.setWitnessUtxo(new TransactionOutput(null, Transaction.MAX_SATOSHIS, P2TR_SCRIPT));
+        }
+
+        Assertions.assertNull(psbt.getFee(), "A sum of input amounts that overflows a long must report an unknown fee");
     }
 
     //BIP174 test vector - input 0 is a legacy P2SH multisig with a non witness utxo, input 1 is P2SH-P2WSH with a witness utxo
@@ -1622,6 +2009,21 @@ public class PSBTTest {
     private static final Script CHANGE_SCRIPT = new Script(Utils.hexToBytes("76a914000000000000000000000000000000000000000088ac"));
     private static final Script P2TR_SCRIPT = new Script(Utils.hexToBytes("5120aa00000000000000000000000000000000000000000000000000000000000011"));
     private static final String MATCHES_V0_PSBT = "cHNidP8BAHUCAAAAASaBcTce3/KF6Tet7qSze3gADAVmy7OtZGQXE8pCFxv2AAAAAAD+////AtPf9QUAAAAAGXapFNDFmQPFusKGh2DpD9UhpGZap2UgiKwA4fUFAAAAABepFDVF5uM7gyxHBQ8k0+65PJwDlIvHh7MuEwAAAQD9pQEBAAAAAAECiaPHHqtNIOA3G7ukzGmPopXJRjr6Ljl/hTPMti+VZ+UBAAAAFxYAFL4Y0VKpsBIDna89p95PUzSe7LmF/////4b4qkOnHf8USIk6UwpyN+9rRgi7st0tAXHmOuxqSJC0AQAAABcWABT+Pp7xp0XpdNkCxDVZQ6vLNL1TU/////8CAMLrCwAAAAAZdqkUhc/xCX/Z4Ai7NK9wnGIZeziXikiIrHL++E4sAAAAF6kUM5cluiHv1irHU6m80GfWx6ajnQWHAkcwRAIgJxK+IuAnDzlPVoMR3HyppolwuAJf3TskAinwf4pfOiQCIAGLONfc0xTnNMkna9b7QPZzMlvEuqFEyADS8vAtsnZcASED0uFWdJQbrUqZY3LLh+GFbTZSYG2YVi/jnF6efkE/IQUCSDBFAiEA0SuFLYXc2WHS9fSrZgZU327tzHlMDDPOXMMJ/7X85Y0CIGczio4OFyXBl/saiK9Z9R5E5CVbIBZ8hoQDHAXR8lkqASECI7cr7vCWXRC+B3jv7NYfysb3mk6haTkzgHNEZPhPKrMAAAAAAAAA";
+
+    private void assertEveryTruncationIsRejected(byte[] serialized) {
+        Assertions.assertDoesNotThrow(() -> new PSBT(serialized, false), "The untruncated PSBT must parse, otherwise every truncation is rejected vacuously");
+
+        for(int length = 0; length < serialized.length; length++) {
+            byte[] truncated = Arrays.copyOf(serialized, length);
+            Assertions.assertThrows(PSBTParseException.class, () -> new PSBT(truncated, false), "Truncating to " + length + "/" + serialized.length + " bytes must be rejected");
+        }
+    }
+
+    private byte[] serializeWithInputCountEntry(String inputCountEntryHex) {
+        String hex = Utils.bytesToHex(new PSBT(buildMatchesTransaction(new byte[0], 12345L)).serialize());
+        Assertions.assertEquals(hex.indexOf("01040101"), hex.lastIndexOf("01040101"), "The single input count entry must be uniquely identifiable in the serialized PSBT");
+        return Utils.hexToBytes(hex.replace("01040101", inputCountEntryHex));
+    }
 
     private Transaction buildMatchesTransaction(byte[] scriptSig, long outputValue) {
         return buildMatchesTransaction(scriptSig, outputValue, CHANGE_SCRIPT);
