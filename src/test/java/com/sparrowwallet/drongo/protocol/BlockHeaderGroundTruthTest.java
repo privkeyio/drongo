@@ -73,7 +73,7 @@ public class BlockHeaderGroundTruthTest {
                     continue;
                 }
 
-                String actualHash = blockHeader.getPoWHash().toString();
+                String actualHash = blockHeader.getHash().toString();
                 if(!expectedHash.equals(actualHash)) {
                     failures.add("height " + height + ": expected " + expectedHash + " but got " + actualHash);
                 }
@@ -88,6 +88,49 @@ public class BlockHeaderGroundTruthTest {
         if(!failures.isEmpty()) {
             Assertions.fail(failures.size() + " of " + compared + " headers from the testnet4 chain that activated at height "
                     + RC1_ACTIVATION_HEIGHT + " do not hash to the value that chain agreed on:"
+                    + System.lineSeparator() + String.join(System.lineSeparator(), failures));
+        }
+    }
+
+    /**
+     * The rows are consecutive, so each one names the row below it in its previous block hash field. That is the
+     * property the header chain is built on, and it holds only where the identifier is the hash the chain actually
+     * uses: computed as SHA256d these rows link to nothing, and every height above the fork is left unverifiable.
+     */
+    @Test
+    public void testEachHeaderLinksToTheOneBelowIt() throws IOException {
+        Network.set(Network.TESTNET4);
+
+        List<String> failures = new ArrayList<>();
+        BlockHeader previous = null;
+        int previousHeight = 0;
+        int compared = 0;
+
+        for(String line : readGroundTruth()) {
+            if(line.strip().isEmpty()) {
+                continue;
+            }
+
+            String[] columns = line.strip().split("\t");
+            int height = Integer.parseInt(columns[0]);
+            BlockHeader blockHeader = new BlockHeader(Utils.hexToBytes(columns[1]), 0);
+
+            if(previous != null && height == previousHeight + 1) {
+                compared++;
+                if(!blockHeader.getPrevBlockHash().equals(previous.getHash())) {
+                    failures.add("height " + height + ": names " + blockHeader.getPrevBlockHash()
+                            + " as its previous block, but height " + previousHeight + " hashes to " + previous.getHash());
+                }
+            }
+
+            previous = blockHeader;
+            previousHeight = height;
+        }
+
+        Assertions.assertTrue(compared > 0, "No consecutive pairs read from " + GROUND_TRUTH);
+
+        if(!failures.isEmpty()) {
+            Assertions.fail(failures.size() + " of " + compared + " consecutive headers do not link:"
                     + System.lineSeparator() + String.join(System.lineSeparator(), failures));
         }
     }

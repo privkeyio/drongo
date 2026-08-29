@@ -236,8 +236,29 @@ public class BlockHeader extends Message {
         return mmRhs;
     }
 
+    /**
+     * The block's identifier: the value a child header carries in its previous block hash field, and the value the
+     * proof of work is measured against. A v1 header is identified by the historical SHA256d over its 80 bytes, and
+     * a v2 header by the BLAKE2b pipeline its proof of work runs, XORed with the key mask. The fork replaces the
+     * identifier along with the proof of work, so a v2 header's SHA256d is not a block id at all.
+     *
+     * Note the reference implementation writes the closing XOR out backwards, so its result is in wire order.
+     * Wrapping the XOR directly gives the same hash here, since Sha256Hash holds display order.
+     */
     public Sha256Hash getHash() {
-        return Sha256Hash.wrapReversed(Sha256Hash.hashTwice(bitcoinSerialize()));
+        if(!headerV2) {
+            return Sha256Hash.wrapReversed(Sha256Hash.hashTwice(bitcoinSerialize()));
+        }
+
+        byte[] blake2bRound2 = getPoWBlake2bRound2();
+        byte[] mask = getPoWXorKeyMask();
+
+        byte[] hash = new byte[Sha256Hash.LENGTH];
+        for(int i = 0; i < hash.length; i++) {
+            hash[i] = (byte)(blake2bRound2[i] ^ mask[i]);
+        }
+
+        return Sha256Hash.wrap(hash);
     }
 
     /**
@@ -402,29 +423,6 @@ public class BlockHeader extends Message {
         return Blake2b256.hash(getPoWAsicInput());
     }
 
-    /**
-     * The hash the proof of work is measured against. A v1 header uses the historical SHA256d algorithm,
-     * while a v2 header runs the BLAKE2b pipeline and XORs the result with the key mask.
-     *
-     * Note the reference implementation writes the closing XOR out backwards, so its result is in wire
-     * order. Wrapping the XOR directly gives the same hash here, since Sha256Hash holds display order.
-     */
-    public Sha256Hash getPoWHash() {
-        if(!headerV2) {
-            return getHash();
-        }
-
-        byte[] blake2bRound2 = getPoWBlake2bRound2();
-        byte[] mask = getPoWXorKeyMask();
-
-        byte[] hash = new byte[Sha256Hash.LENGTH];
-        for(int i = 0; i < hash.length; i++) {
-            hash[i] = (byte)(blake2bRound2[i] ^ mask[i]);
-        }
-
-        return Sha256Hash.wrap(hash);
-    }
-
     private byte[] getExtranonceOnWire() {
         return Utils.reverseBytes(extranonce);
     }
@@ -448,9 +446,9 @@ public class BlockHeader extends Message {
     }
 
     /**
-     * Checks the proof of work hash meets the header's own claimed difficulty target, and that the target does
-     * not exceed the network proof of work limit. A v1 header is measured against its SHA256d hash as before,
-     * while a v2 header is measured against the BLAKE2b hash its proof of work is actually done over.
+     * Checks the block hash meets the header's own claimed difficulty target, and that the target does not exceed
+     * the network proof of work limit. The identifier is the hash the proof of work is done over under either rule
+     * set, so this is the same check across the fork.
      */
     public boolean verifyProofOfWork() {
         BigInteger target = getDifficultyTargetAsInteger();
@@ -458,7 +456,7 @@ public class BlockHeader extends Message {
             return false;
         }
 
-        return getPoWHash().toBigInteger().compareTo(target) <= 0;
+        return getHash().toBigInteger().compareTo(target) <= 0;
     }
 
     public byte[] bitcoinSerialize() {

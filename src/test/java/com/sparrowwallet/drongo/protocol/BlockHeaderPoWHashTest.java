@@ -169,7 +169,7 @@ public class BlockHeaderPoWHashTest {
     public void testBlockHash() throws IOException {
         for(Map<String, Object> header : loadHeaders()) {
             BlockHeader blockHeader = parseHeader(header);
-            Assertions.assertEquals(header.get("block_hash"), blockHeader.getPoWHash().toString(),
+            Assertions.assertEquals(header.get("block_hash"), blockHeader.getHash().toString(),
                     name(header) + ": block_hash mismatch");
         }
     }
@@ -196,20 +196,21 @@ public class BlockHeaderPoWHashTest {
     }
 
     /**
-     * A v1 header takes the historical SHA256d path, so its proof of work hash is just its block hash.
+     * A v1 header takes the historical SHA256d path, so its identifier is unchanged by the fork.
      */
     @Test
     public void testVersion1UsesSha256d() {
         BlockHeader blockHeader = new BlockHeader(Utils.hexToBytes(BlockHeaderTest.GENESIS_HEADER_HEX));
 
         Assertions.assertFalse(blockHeader.isHeaderV2());
-        Assertions.assertEquals(blockHeader.getHash(), blockHeader.getPoWHash());
+        Assertions.assertEquals(Sha256Hash.wrapReversed(Sha256Hash.hashTwice(blockHeader.bitcoinSerialize())), blockHeader.getHash());
     }
 
     /**
-     * A header that passes its target under the BLAKE2b hash and fails it under SHA256d, so it only verifies
-     * if the proof of work is measured against the right one. A fixture header fails under either hash and
-     * so would not tell the two apart.
+     * A header that passes its target under the BLAKE2b hash and fails it under SHA256d, so it only verifies if the
+     * proof of work is measured against the right one. A fixture header fails under either hash and so would not
+     * tell the two apart. The SHA256d of a v2 header is not its identifier, and is computed here only to show that
+     * measuring against it would refuse a block the network accepted.
      */
     @Test
     public void testVersion2VerifiesAgainstPoWHash() {
@@ -217,22 +218,23 @@ public class BlockHeaderPoWHashTest {
 
         BlockHeader blockHeader = new BlockHeader(Utils.hexToBytes(DISCRIMINATING_HEADER_HEX));
         BigInteger target = blockHeader.getDifficultyTargetAsInteger();
+        Sha256Hash sha256d = Sha256Hash.wrapReversed(Sha256Hash.hashTwice(blockHeader.bitcoinSerialize()));
 
         Assertions.assertTrue(blockHeader.isHeaderV2());
         Assertions.assertEquals(DISCRIMINATING_NBITS, blockHeader.getDifficultyTarget());
         Assertions.assertTrue(target.compareTo(Network.get().getProofOfWorkLimit()) <= 0, "Target is easier than the regtest limit");
 
         //The BLAKE2b hash is under the target, while the SHA256d hash is over it
-        Assertions.assertEquals(DISCRIMINATING_POW_HASH, blockHeader.getPoWHash().toString());
-        Assertions.assertEquals(DISCRIMINATING_SHA256D_HASH, blockHeader.getHash().toString());
-        Assertions.assertTrue(blockHeader.getPoWHash().toBigInteger().compareTo(target) <= 0, "BLAKE2b hash should meet the target");
-        Assertions.assertTrue(blockHeader.getHash().toBigInteger().compareTo(target) > 0, "SHA256d hash should miss the target");
+        Assertions.assertEquals(DISCRIMINATING_POW_HASH, blockHeader.getHash().toString());
+        Assertions.assertEquals(DISCRIMINATING_SHA256D_HASH, sha256d.toString());
+        Assertions.assertTrue(blockHeader.getHash().toBigInteger().compareTo(target) <= 0, "BLAKE2b hash should meet the target");
+        Assertions.assertTrue(sha256d.toBigInteger().compareTo(target) > 0, "SHA256d hash should miss the target");
 
         Assertions.assertTrue(blockHeader.verifyProofOfWork());
     }
 
     /**
-     * A v1 header still verifies against SHA256d, since getPoWHash() delegates to getHash() for it.
+     * A v1 header still verifies against SHA256d, its identifier being unchanged by the fork.
      */
     @Test
     public void testVersion1StillVerifies() {

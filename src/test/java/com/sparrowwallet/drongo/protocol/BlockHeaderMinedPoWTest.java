@@ -37,7 +37,7 @@ public class BlockHeaderMinedPoWTest {
     private void assertHeader(String headerHex, String expectedHash) {
         BlockHeader blockHeader = new BlockHeader(Utils.hexToBytes(headerHex), 0);
         Assertions.assertTrue(blockHeader.isHeaderV2(), "Header is not a v2 header");
-        Assertions.assertEquals(expectedHash, blockHeader.getPoWHash().toString(),
+        Assertions.assertEquals(expectedHash, blockHeader.getHash().toString(),
                 "Proof of work hash does not match the hash the node mined this header to");
         Assertions.assertTrue(blockHeader.verifyProofOfWork(),
                 "A header the node mined and accepted must meet its claimed target here too");

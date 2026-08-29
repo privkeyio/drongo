@@ -19,7 +19,7 @@ public class Block extends Message {
         blockHeader = new BlockHeader(payload, cursor);
         cursor += blockHeader.getMessageSize();
 
-        hash = Sha256Hash.wrapReversed(Sha256Hash.hashTwice(payload, offset, cursor - offset));
+        hash = blockHeader.getHash();
         if(cursor != payload.length) {
             long numTransactions = readVarInt();
             if(numTransactions < 0) {
