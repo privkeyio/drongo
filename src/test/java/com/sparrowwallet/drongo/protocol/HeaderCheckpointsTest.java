@@ -137,4 +137,31 @@ public class HeaderCheckpointsTest {
     public void tearDown() throws Exception {
         Network.set(null);
     }
+
+    /**
+     * A pinned header above the activation height would be describing the wrong chain.
+     *
+     * The checkpoints are inherited from upstream, which follows the chain that did not adopt the fork, so above the
+     * activation height its hashes are not the ones this wallet must verify against. Pinning one there anchors the
+     * header store above the fork and links every height to a block the connected node does not have, which fails
+     * closed for the whole network rather than for one height.
+     *
+     * Mainnet shipped such a pin once: 963647 carried bits 0x17023cc1, an ordinary pre-fork target, where the shift
+     * at 961640 puts the forked chain near 0x1a008d4f. Below the last pin nothing is difficulty checked, so the
+     * shift could never fire and nothing else would have caught it.
+     */
+    @Test
+    public void testNoPinnedHeaderSitsAboveTheActivationHeight() {
+        for(Network network : Network.values()) {
+            Integer activationHeight = network.getBlake2bHeight();
+            if(activationHeight != null) {
+                Network.set(network);
+                int maxHeight = HeaderCheckpoints.get(network).getMaxHeight();
+                Assertions.assertTrue(maxHeight < activationHeight,
+                        network + " pins height " + maxHeight + ", at or above its activation height " + activationHeight
+                                + ", so the pin describes the chain that did not adopt the fork");
+                Network.set(null);
+            }
+        }
+    }
 }
