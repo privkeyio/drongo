@@ -113,6 +113,45 @@ public enum Network {
     }
 
     /**
+     * The height the BLAKE2b hardfork activates at on this network, or null where this build ships no schedule for it.
+     *
+     * consensus.Blake2bHeight in the Knots chainparams. The schedule has moved more than once before a final release,
+     * and each move replaced the chain that followed the old one, so this value is not to be trusted on its own: it is
+     * cross checked against the connected node, and a disagreement declines rather than following either side.
+     */
+    public Integer getBlake2bHeight() {
+        return switch(this) {
+            case MAINNET -> 961640;
+            case TESTNET4 -> 150308;
+            default -> null;    //regtest chooses its own through -testactivationheight, and there is nothing to hardcode
+        };
+    }
+
+    /**
+     * How far left the difficulty target is shifted at the activation height, being consensus.Blake2bTargetShift.
+     *
+     * The block at the activation height takes its parent's target shifted by this and capped at the proof of work
+     * limit, then normal retargeting resumes. A one off allowance for the fact that no hardware mines the new
+     * algorithm yet. Networks that do not pin one take the reference implementation's default.
+     */
+    public int getBlake2bTargetShift() {
+        return this == MAINNET ? 22 : 20;
+    }
+
+    /**
+     * The target the block at the activation height is required to claim, given the one its parent claimed.
+     * Follows ApplyBlake2bTargetShift: shift left, but never past the proof of work limit.
+     */
+    public long applyBlake2bTargetShift(long compactBits) {
+        BigInteger target = Utils.decodeCompactBits(compactBits);
+        BigInteger powLimit = getProofOfWorkLimit();
+        BigInteger shifted = target.compareTo(powLimit.shiftRight(getBlake2bTargetShift())) > 0
+                ? powLimit : target.shiftLeft(getBlake2bTargetShift());
+
+        return Utils.encodeCompactBits(shifted);
+    }
+
+    /**
      * The maximum (easiest) allowed difficulty target for this network, decoded from the consensus powLimit compact bits.
      */
     public BigInteger getProofOfWorkLimit() {

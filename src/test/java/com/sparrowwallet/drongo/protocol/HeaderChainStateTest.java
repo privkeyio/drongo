@@ -279,6 +279,70 @@ public class HeaderChainStateTest {
         Assertions.assertDoesNotThrow(() -> new HeaderChainState(HeaderChainState.RETARGET_INTERVAL - 1, Sha256Hash.wrap(MAINNET_ANCHOR_HASH), MAINNET_ANCHOR_BITS));
     }
 
+    /**
+     * The one-off target shift at the BLAKE2b activation height, which the reference implementation applies in
+     * GetNextWorkRequired: the block at Blake2bHeight takes the target the ordinary rules produced, shifted left by
+     * Blake2bTargetShift and capped at the proof of work limit, and normal retargeting resumes from there.
+     *
+     * Exercised on the rule rather than through a chain, because mainnet is the only network that both enforces the
+     * required difficulty rule and ships a schedule, its activation height falls mid period so a state cannot be
+     * anchored below it, and its headers cannot be mined here to reach it.
+     */
+    @Test
+    public void testTheShiftAppliesAtTheActivationHeightOnly() {
+        Network.set(Network.MAINNET);
+
+        int activationHeight = Network.get().getBlake2bHeight();
+        long shifted = Network.get().applyBlake2bTargetShift(MAINNET_ANCHOR_BITS);
+        Assertions.assertNotEquals(MAINNET_ANCHOR_BITS, shifted, "the shift must move the target, or this asserts nothing");
+
+        Assertions.assertEquals(shifted, HeaderChainState.applyBlake2bTargetShift(activationHeight, MAINNET_ANCHOR_BITS));
+        for(int height : new int[] {activationHeight - 1, activationHeight + 1, activationHeight + 2016}) {
+            Assertions.assertEquals(MAINNET_ANCHOR_BITS, HeaderChainState.applyBlake2bTargetShift(height, MAINNET_ANCHOR_BITS),
+                    "height " + height + " is not the activation height and must take the target unchanged");
+        }
+    }
+
+    /**
+     * The shift never makes a target easier than the network allows, however large it is.
+     */
+    @Test
+    public void testTheShiftIsCappedAtTheProofOfWorkLimit() {
+        Network.set(Network.MAINNET);
+
+        long powLimitBits = Utils.encodeCompactBits(Network.get().getProofOfWorkLimit());
+        Assertions.assertEquals(powLimitBits, Network.get().applyBlake2bTargetShift(powLimitBits));
+        Assertions.assertTrue(Utils.decodeCompactBits(Network.get().applyBlake2bTargetShift(MAINNET_ANCHOR_BITS))
+                .compareTo(Network.get().getProofOfWorkLimit()) <= 0);
+        //Shifting by the pinned amount, not the reference default, which mainnet overrides
+        Assertions.assertEquals(22, Network.get().getBlake2bTargetShift());
+        //The compact form carries a 24 bit mantissa, so the shifted target is truncated to it, as GetCompact does
+        Assertions.assertEquals(Utils.encodeCompactBits(Utils.decodeCompactBits(MAINNET_ANCHOR_BITS).shiftLeft(22)),
+                Network.get().applyBlake2bTargetShift(MAINNET_ANCHOR_BITS));
+    }
+
+    /**
+     * A network with no schedule shifts nothing, at any height. Regtest chooses its own activation through the node,
+     * so this build ships none for it and the ordinary rules stand throughout.
+     */
+    @Test
+    public void testAnUnscheduledNetworkNeverShifts() {
+        Network.set(Network.REGTEST);
+        Assertions.assertNull(Network.get().getBlake2bHeight());
+
+        for(int height : new int[] {1, 961640, 150308}) {
+            Assertions.assertEquals(0x207fffffL, HeaderChainState.applyBlake2bTargetShift(height, 0x207fffffL));
+        }
+
+        HeaderChainState chainState = new HeaderChainState(0, Network.REGTEST.getGenesisHash(), 0x207fffffL);
+        BlockHeader previous = Network.REGTEST.getGenesisHeader();
+        for(int i = 0; i < 3; i++) {
+            previous = mineRegtestHeader(previous, 1600000000L + i);
+            chainState.add(previous);
+        }
+        Assertions.assertEquals(3, chainState.getHeight());
+    }
+
     private static BlockHeader mineRegtestHeader(BlockHeader previous, long time) {
         for(long nonce = 0; nonce < 1000; nonce++) {
             BlockHeader header = new BlockHeader(1, previous.getHash(), Sha256Hash.ZERO_HASH, null, time, 0x207fffffL, nonce);

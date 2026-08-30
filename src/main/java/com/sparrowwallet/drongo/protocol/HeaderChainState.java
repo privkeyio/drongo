@@ -88,15 +88,32 @@ public class HeaderChainState {
         if(height == anchorHeight) {
             return nextBits;    //the first header after the anchor is a period boundary whose target is the pinned bits; no period has been observed to retarget from
         }
+        long requiredBits;
         if((height + 1) % RETARGET_INTERVAL == 0) {
             if(lastRetargetTime == NO_RETARGET_TIME) {
                 throw new VerificationException("Cannot retarget at height " + (height + 1) + ": no difficulty period has started since the anchor at height " + anchorHeight);
             }
 
-            return calculateNextWorkRequired(nextBits, lastRetargetTime, getLastTime());
+            requiredBits = calculateNextWorkRequired(nextBits, lastRetargetTime, getLastTime());
+        } else {
+            requiredBits = nextBits;
         }
 
-        return nextBits;
+        return applyBlake2bTargetShift(height + 1, requiredBits);
+    }
+
+    /**
+     * The one off target shift at the activation height, applied after the ordinary rules have produced a target.
+     *
+     * No hardware mines the new algorithm at the moment it activates, so the block at that height is allowed a much
+     * easier target and normal retargeting resumes from it. Applies at exactly one height: a chain that carried the
+     * shift forward, or applied it a block early or late, would be refused here as it would be by the network.
+     */
+    static long applyBlake2bTargetShift(int height, long requiredBits) {
+        Integer activationHeight = Network.get().getBlake2bHeight();
+
+        return activationHeight != null && height == activationHeight
+                ? Network.get().applyBlake2bTargetShift(requiredBits) : requiredBits;
     }
 
     /**
