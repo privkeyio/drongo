@@ -14,6 +14,7 @@ import com.sparrowwallet.drongo.silentpayments.SilentPaymentScanAddress;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
@@ -21,6 +22,38 @@ import java.util.Map;
 import java.util.TreeSet;
 
 public class WalletTest {
+    /**
+     * There is no opted-in form of SIGHASH_DEFAULT, so a taproot signature that opts in carries a hash type byte and
+     * encodes to 65 bytes rather than 64. The dummy this estimate is built from promises to take the same number of
+     * encoded bytes as a real signature, and that stopped holding when the opt-in was added.
+     *
+     * A taproot keypath witness is the signature alone, so the shortfall is exactly one weight unit an input. Small,
+     * and in the wrong direction: the transaction pays fractionally under the rate asked for, and near the relay
+     * floor the node refuses it with nothing in the wallet to say why.
+     */
+    @Test
+    public void testTaprootInputEstimateCoversAnOptedInSignature() throws MnemonicException {
+        BigInteger val = ECKey.HALF_CURVE_ORDER;
+        int deflt = new TransactionSignature(val, val, TransactionSignature.Type.SCHNORR, SigHash.DEFAULT.value).encodeToBitcoin().length;
+        int optedIn = new TransactionSignature(val, val, TransactionSignature.Type.SCHNORR, SigHash.UNIFIED_ALL.value).encodeToBitcoin().length;
+        Assertions.assertEquals(64, deflt, "a default taproot signature carries no hash type byte");
+        Assertions.assertEquals(65, optedIn, "an opted-in one does, or this asserts nothing");
+
+        String words = "absent essay fox snake vast pumpkin height crouch silent bulb excuse razor";
+        DeterministicSeed seed = new DeterministicSeed(words, "", 0, DeterministicSeed.Type.BIP39);
+        Wallet wallet = new Wallet();
+        wallet.setPolicyType(PolicyType.SINGLE_HD);
+        wallet.setScriptType(ScriptType.P2TR);
+        wallet.getKeystores().add(Keystore.fromSeed(seed, PolicyType.SINGLE_HD, ScriptType.P2TR.getDefaultDerivation()));
+        wallet.setDefaultPolicy(Policy.getPolicy(PolicyType.SINGLE_HD, ScriptType.P2TR, wallet.getKeystores(), 1));
+
+        //outpoint 36 + empty scriptSig varint 1 + sequence 4, at four weight units a byte, plus a witness holding a
+        //single item: its count, the length prefix, and the signature
+        int expected = (36 + 1 + 4) * 4 + 1 + 1 + optedIn;
+        Assertions.assertEquals(expected, wallet.getInputWeightUnits(),
+                "the estimate must cover an opted-in signature rather than a default one");
+    }
+
     @Test
     public void encryptTest() throws MnemonicException {
         String words = "absent essay fox snake vast pumpkin height crouch silent bulb excuse razor";

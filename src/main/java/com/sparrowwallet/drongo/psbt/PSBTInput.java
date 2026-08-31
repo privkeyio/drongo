@@ -1188,10 +1188,12 @@ public class PSBTInput {
         Sha256Hash hash;
 
         ScriptType scriptType = getScriptType();
-        if(localSigHash.isUnified()) {
+        //Tested on the bit rather than through SigHash.fromByte, because this overload is handed hash type bytes
+        //taken off the wire and one that is not a defined type must not throw out of a signature check.
+        if((sigHashType & SigHash.UNIFIED_FLAG) != 0) {
             //The unified algorithm covers every script type, so it is selected by the opt-in bit rather than
             //by the input's kind. The kind only decides which script type byte and tail the message carries.
-            hash = getHashForUnifiedSignature(connectedScript, localSigHash, scriptType);
+            hash = getHashForUnifiedSignature(connectedScript, sigHashType, scriptType);
         } else if(scriptType == ScriptType.P2TR) {
             List<TransactionOutput> spentUtxos = psbt.getPsbtInputs().stream().map(PSBTInput::getUtxo).collect(Collectors.toList());
             hash = psbt.getTransaction().hashForTaprootSignature(spentUtxos, index, !P2TR.isScriptType(connectedScript), connectedScript, sigHashType, null);
@@ -1205,7 +1207,7 @@ public class PSBTInput {
         return hash;
     }
 
-    private Sha256Hash getHashForUnifiedSignature(Script connectedScript, SigHash localSigHash, ScriptType scriptType) {
+    private Sha256Hash getHashForUnifiedSignature(Script connectedScript, byte sigHashType, ScriptType scriptType) {
         //Every spent output is committed to, not just this input's, which is what closes CVE-2020-14199.
         //PSBT already carries them per input.
         List<TransactionOutput> spentUtxos = psbt.getPsbtInputs().stream().map(PSBTInput::getUtxo).collect(Collectors.toList());
@@ -1228,7 +1230,7 @@ public class PSBTInput {
             scriptCode = connectedScript.getProgram();
         }
 
-        return psbt.getTransaction().hashForUnifiedSignature(spentUtxos, index, unifiedScriptType, scriptCode, localSigHash.byteValue(), null, tapLeafHash, null);
+        return psbt.getTransaction().hashForUnifiedSignature(spentUtxos, index, unifiedScriptType, scriptCode, sigHashType, null, tapLeafHash, null);
     }
 
     private byte[] getTapLeafHash(Script leafScript) {

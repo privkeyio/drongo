@@ -1050,14 +1050,14 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         TransactionInput txInput = null;
         if(getPolicyType().equals(PolicyType.SINGLE_HD) || getPolicyType().equals(PolicyType.SINGLE_SP)) {
             ECKey pubKey = receiveNode.getPubKey();
-            TransactionSignature signature = TransactionSignature.dummy(getScriptType().getSignatureType());
+            TransactionSignature signature = TransactionSignature.dummy(getScriptType().getSignatureType(), SigHash.UNIFIED_ALL.value);
             txInput = getScriptType().addSpendingInput(getPolicyType(), transaction, prevTxOut, pubKey, signature);
         } else if(getPolicyType().equals(PolicyType.MULTI_HD)) {
             List<ECKey> pubKeys = receiveNode.getPubKeys();
             int threshold = getDefaultPolicy().getNumSignaturesRequired();
             Map<ECKey, TransactionSignature> pubKeySignatures = new TreeMap<>(new ECKey.LexicographicECKeyComparator());
             for(int i = 0; i < pubKeys.size(); i++) {
-                pubKeySignatures.put(pubKeys.get(i), i < threshold ? TransactionSignature.dummy(getScriptType().getSignatureType()) : null);
+                pubKeySignatures.put(pubKeys.get(i), i < threshold ? TransactionSignature.dummy(getScriptType().getSignatureType(), SigHash.UNIFIED_ALL.value) : null);
             }
             txInput = getScriptType().addMultisigSpendingInput(getPolicyType(), transaction, prevTxOut, threshold, pubKeySignatures);
         }
