@@ -6,6 +6,7 @@ import org.bouncycastle.gpg.keybox.KeyBlob;
 import org.bouncycastle.gpg.keybox.PublicKeyRingBlob;
 import org.bouncycastle.gpg.keybox.bc.BcKeyBox;
 import org.bouncycastle.openpgp.PGPPublicKey;
+import org.bouncycastle.openpgp.PGPSignature;
 import org.bouncycastle.openpgp.PGPPublicKeyRing;
 import org.bouncycastle.openpgp.PGPPublicKeyRingCollection;
 import org.bouncycastle.util.io.Streams;
@@ -97,9 +98,9 @@ public class PGPUtils {
                         String userId = fingerprint;
                         boolean expired = false;
                         if(signedByKey != null) {
-                            Iterator<String> userIds = signedByKey.getUserIDs();
-                            if(userIds.hasNext()) {
-                                userId = userIds.next();
+                            String selected = selectUserId(signedByKey);
+                            if(selected != null) {
+                                userId = selected;
                             }
                             expired = isExpired(signedByKey);
                         }
@@ -219,6 +220,41 @@ public class PGPUtils {
             log.debug("Error opening signature file", e);
             return false;
         }
+    }
+
+    /**
+     * The identity to show for a signing key, preferring one that has not been revoked.
+     *
+     * Taking the first user id shows whichever the key happens to list first, and a key that has rotated an
+     * address still carries the old one. Displaying a revoked identity for a signature that is otherwise good
+     * tells the person verifying a download that the signer is someone other than the one the release names,
+     * which reads as tampering rather than as an old address.
+     */
+    private static String selectUserId(PGPPublicKey key) {
+        String first = null;
+        for(Iterator<String> userIds = key.getUserIDs(); userIds.hasNext(); ) {
+            String userId = userIds.next();
+            if(first == null) {
+                first = userId;
+            }
+            if(!isRevoked(key, userId)) {
+                return userId;
+            }
+        }
+
+        //Every identity on the key is revoked, so there is no better answer than the one it lists first
+        return first;
+    }
+
+    private static boolean isRevoked(PGPPublicKey key, String userId) {
+        Iterator<PGPSignature> signatures = key.getSignaturesForID(userId);
+        while(signatures != null && signatures.hasNext()) {
+            if(signatures.next().getSignatureType() == PGPSignature.CERTIFICATION_REVOCATION) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static boolean isExpired(PGPPublicKey publicKey) {
