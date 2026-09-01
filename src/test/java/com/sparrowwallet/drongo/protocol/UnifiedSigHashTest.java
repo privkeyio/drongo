@@ -323,4 +323,36 @@ public class UnifiedSigHashTest {
             }
         }
     }
+
+    /**
+     * 0x20 and 0xa0 name no output type and consensus refuses both. Excluding them from the valid signing types is
+     * not the same as making them unreachable: withUnified computes base | 0x20, so a bare ANYONECANPAY would reach
+     * 0xa0 by that route. It is left alone instead.
+     */
+    @Test
+    public void testTheTypesWithNoOutputTypeAreNeverProduced() {
+        Assertions.assertEquals(SigHash.ANYONECANPAY, SigHash.ANYONECANPAY.withUnified(),
+                "a bare ANYONECANPAY has no output type to opt in for");
+
+        //Parsing one is not producing one: a PSBT may declare any byte, and 0xa0 is modelled so it can be read.
+        //What must never happen is computing one from a type that did not already carry it.
+        for(SigHash sigHash : SigHash.values()) {
+            if(sigHash.isUnified()) {
+                continue;
+            }
+            SigHash opted = sigHash.withUnified();
+            Assertions.assertNotEquals((byte)0x20, opted.byteValue(), sigHash + " produced 0x20");
+            Assertions.assertNotEquals((byte)0xa0, opted.byteValue(), sigHash + " produced 0xa0");
+        }
+
+        //The six that are valid still round trip through the opt-in
+        for(SigHash sigHash : List.of(SigHash.ALL, SigHash.NONE, SigHash.SINGLE,
+                SigHash.ANYONECANPAY_ALL, SigHash.ANYONECANPAY_NONE, SigHash.ANYONECANPAY_SINGLE)) {
+            Assertions.assertTrue(SigHash.UNIFIED_SIGNING_TYPES.contains(sigHash.withUnified()),
+                    sigHash + " must opt in to a valid type");
+        }
+
+        //DEFAULT carries no byte at all, so it opts in as ALL does
+        Assertions.assertEquals(SigHash.UNIFIED_ALL, SigHash.DEFAULT.withUnified());
+    }
 }

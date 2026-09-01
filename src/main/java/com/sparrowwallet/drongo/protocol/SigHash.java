@@ -78,6 +78,15 @@ public enum SigHash {
         //DEFAULT appends no hash type byte, so there is nothing to carry the bit. It means the same
         //signature as ALL once a byte is present, which is what an opted-in taproot spend uses.
         byte base = (this == DEFAULT ? ALL.value : value);
+
+        //0x20 and 0xa0 name no output type and consensus refuses both, so a bare ANYONECANPAY is left as it is
+        //rather than handed a bit that would make it invalid under either rule set. Keeping them out of the list of
+        //valid signing types is not the same as making them unreachable, and this is the path that reaches them.
+        int outputType = base & 0x1f;
+        if(outputType < ALL.value || outputType > SINGLE.value) {
+            return this;
+        }
+
         return fromByte((byte)(base | UNIFIED_FLAG));
     }
 

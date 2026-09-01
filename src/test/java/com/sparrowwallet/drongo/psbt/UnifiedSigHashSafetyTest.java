@@ -105,7 +105,18 @@ public class UnifiedSigHashSafetyTest {
     public void testTheOptInMappingIsTotal() {
         for(SigHash sigHash : SigHash.values()) {
             SigHash unified = Assertions.assertDoesNotThrow(sigHash::withUnified, sigHash.toString());
-            Assertions.assertTrue(unified.isUnified(), sigHash + " did not map to an opted-in type");
+
+            //Total in the sense that matters: it never throws and never leaves an unusable value. It is not total in
+            //mapping every type to an opted-in one, because a type naming no output type has no opted-in form, and
+            //giving it the bit would produce a byte consensus refuses.
+            boolean namesAnOutputType = (sigHash.byteValue() & 0x1f) >= SigHash.ALL.byteValue()
+                    && (sigHash.byteValue() & 0x1f) <= SigHash.SINGLE.byteValue();
+            if(namesAnOutputType || sigHash == SigHash.DEFAULT) {
+                Assertions.assertTrue(unified.isUnified(), sigHash + " did not map to an opted-in type");
+            } else {
+                Assertions.assertSame(sigHash, unified, sigHash + " has no opted-in form and must be left alone");
+            }
+
             Assertions.assertDoesNotThrow(unified::withoutUnified, unified.toString());
         }
     }
