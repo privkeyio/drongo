@@ -785,6 +785,18 @@ public class Transaction extends ChildMessage {
      * @param tapLeafHash  the BIP341 leaf hash, required for TAPSCRIPT
      * @param codeSeparatorPosition  the position of the last executed OP_CODESEPARATOR, or null for none
      */
+    /**
+     * The BIP341 leaf hash for a tapscript, which the unified message carries in its tail.
+     */
+    public static byte[] getTapLeafHash(Script leafScript) {
+        byte[] program = leafScript.getProgram();
+        ByteArrayOutputStream leafStream = new ByteArrayOutputStream();
+        leafStream.write(LEAF_VERSION_TAPSCRIPT);
+        leafStream.writeBytes(new VarInt(program.length).encode());
+        leafStream.writeBytes(program);
+        return Utils.taggedHash("TapLeaf", leafStream.toByteArray());
+    }
+
     public synchronized Sha256Hash hashForUnifiedSignature(List<TransactionOutput> spentUtxos, int inputIndex, UnifiedScriptType scriptType,
                                                            byte[] scriptCode, byte sigHashType, byte[] annex, byte[] tapLeafHash,
                                                            Integer codeSeparatorPosition) {

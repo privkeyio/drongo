@@ -570,10 +570,13 @@ public class PSBTInput {
      * every signer that has not signed yet being asked for the legacy digest, and a transaction that was reported as
      * replay protected finishing with none. The signatures already gathered are unaffected either way: each names the
      * type it was made over.
+     *
+     * Any incoming type without the bit counts, not only the exact base of this one. A signer that answers with a
+     * different output type than it was handed, a taproot one returning DEFAULT where ALL was asked for being the
+     * ordinary case, would otherwise walk straight past a match on the base type and clear the opt-in anyway.
      */
     private static boolean clearsOptIn(SigHash current, SigHash incoming) {
-        return current != null && current.isUnified() && !incoming.isUnified()
-                && current.withoutUnified() == incoming.withoutUnified();
+        return current != null && current.isUnified() && !incoming.isUnified();
     }
 
     void combine(PSBTInput psbtInput) {
@@ -987,6 +990,14 @@ public class PSBTInput {
                 }
 
                 Sha256Hash hash = getHashForSignature(signingScript, localSigHash);
+                if(hash == null) {
+                    //getHashForSignature answers null where the message cannot be built, which for a PSBT missing the
+                    //UTXO of some other input is the ordinary case rather than a hostile one. Signing over null would
+                    //reach ECKey.sign as a NullPointerException and be reported as "Failed to Sign: null".
+                    throw new IllegalStateException("Cannot sign input " + index + " with hash type "
+                            + localSigHash + ": the message for it cannot be built from this PSBT");
+                }
+
                 TransactionSignature.Type type = isTaproot() ? SCHNORR : ECDSA;
                 TransactionSignature transactionSignature = psbtInputSigner.sign(hash, localSigHash, type);
 
@@ -1048,17 +1059,49 @@ public class PSBTInput {
         }
     }
 
+    /**
+     * The hash types a signature on this input is allowed to carry.
+     *
+     * Checking each signature against the type it names, rather than against the one the input declares, is what lets
+     * an opted-in signature sit beside a legacy one. Taken alone it would also accept a signature over any other type,
+     * so a signer that returned SIGHASH_NONE where ALL was asked for would verify and finalise, and that signature
+     * commits to no outputs at all. The opt-in bit is the only thing a signer is allowed to differ on, because that
+     * is the only thing this wallet varies per signer: an unmarked one is handed the base type of what the input
+     * declares. Anything else was not asked for by anyone.
+     */
+    private boolean isRequestedType(SigHash declared, byte sigHashType) {
+        if(declared == null) {
+            return true;
+        }
+
+        return sigHashType == declared.value
+                || sigHashType == declared.withUnified().value
+                || sigHashType == declared.withoutUnified().value;
+    }
+
+    private void requireRequestedType(SigHash declared, byte sigHashType) throws PSBTSignatureException {
+        if(!isRequestedType(declared, sigHashType)) {
+            throw new PSBTSignatureException("Input " + index + " carries a signature with hash type "
+                    + Integer.toHexString(Byte.toUnsignedInt(sigHashType)) + ", which is not the "
+                    + declared + " this input asks for");
+        }
+    }
+
     boolean verifySignatures() throws PSBTSignatureException {
         if(getNonWitnessUtxo() != null || getWitnessUtxo() != null) {
             Script signingScript = getSigningScript();
             if(signingScript != null) {
                 //One marked signer is enough, so an input can carry an opted-in signature beside a legacy one while
                 //declaring only one of those types. Each signature names the type it was made over, and that is what
-                //it has to be checked against, the way getSigningKeys() resolves them at finalise time.
+                //it has to be checked against, the way getSigningKeys() resolves them at finalise time. Bounded to the
+                //types this input actually asks for, or checking each signature against its own byte would accept one
+                //made over a type nobody requested.
+                SigHash declared = getSigHash() == null ? getDefaultSigHash() : getSigHash();
                 Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
 
                 if(isTaproot() && tapKeyPathSignature != null) {
                     ECKey outputKey = P2TR.getPublicKeyFromScript(getUtxo().getScript());
+                    requireRequestedType(declared, tapKeyPathSignature.sighashFlags);
                     Sha256Hash hash = sigHashes.computeIfAbsent(tapKeyPathSignature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
                     requireDigest(hash, tapKeyPathSignature.sighashFlags);
                     if(!outputKey.verify(hash, tapKeyPathSignature)) {
@@ -1067,6 +1110,7 @@ public class PSBTInput {
                 } else {
                     for(ECKey sigPublicKey : getPartialSignatures().keySet()) {
                         TransactionSignature signature = getPartialSignature(sigPublicKey);
+                        requireRequestedType(declared, signature.sighashFlags);
                         Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
                         requireDigest(hash, signature.sighashFlags);
                         if(!sigPublicKey.verify(hash, signature)) {
@@ -1217,8 +1261,9 @@ public class PSBTInput {
     /**
      * The digest a signature carrying this hash type byte was made over, or null where the byte names none.
      *
-     * Taproot refuses the hash types BIP341 reserved, and the byte here comes off the wire: a schnorr signature is
-     * 65 bytes with any trailing byte, so anyone who can hand this wallet a PSBT can put a reserved one in it.
+     * The unified message refuses, for taproot and tapscript, the hash types BIP341 reserved, and the byte here comes
+     * off the wire: a schnorr signature is 65 bytes with any trailing byte, so anyone who can hand this wallet a PSBT
+     * can put a reserved one in it.
      * Returning null lets the callers say the signature does not verify, which is true, rather than letting an
      * unchecked exception out of a signature check and taking the screen with it.
      */
@@ -1262,7 +1307,7 @@ public class PSBTInput {
                 unifiedScriptType = UnifiedScriptType.TAPROOT;
             } else {
                 unifiedScriptType = UnifiedScriptType.TAPSCRIPT;
-                tapLeafHash = getTapLeafHash(connectedScript);
+                tapLeafHash = Transaction.getTapLeafHash(connectedScript);
             }
         } else if(Arrays.asList(WITNESS_TYPES).contains(scriptType)) {
             unifiedScriptType = UnifiedScriptType.WITNESS_V0;
@@ -1275,13 +1320,4 @@ public class PSBTInput {
         return psbt.getTransaction().hashForUnifiedSignature(spentUtxos, index, unifiedScriptType, scriptCode, sigHashType, null, tapLeafHash, null);
     }
 
-    private byte[] getTapLeafHash(Script leafScript) {
-        byte[] program = leafScript.getProgram();
-        ByteArrayOutputStream leafStream = new ByteArrayOutputStream();
-        leafStream.write(Transaction.LEAF_VERSION_TAPSCRIPT);
-        leafStream.writeBytes(new VarInt(program.length).encode());
-        leafStream.writeBytes(program);
-
-        return Utils.taggedHash("TapLeaf", leafStream.toByteArray());
-    }
 }

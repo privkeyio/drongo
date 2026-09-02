@@ -1548,7 +1548,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 unifiedScriptType = UnifiedScriptType.TAPROOT;
             } else {
                 unifiedScriptType = UnifiedScriptType.TAPSCRIPT;
-                tapLeafHash = getTapLeafHash(signingScript);
+                tapLeafHash = Transaction.getTapLeafHash(signingScript);
             }
         } else if(txInput.hasWitness()) {
             unifiedScriptType = UnifiedScriptType.WITNESS_V0;
@@ -1565,14 +1565,6 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         }
     }
 
-    private static byte[] getTapLeafHash(Script leafScript) {
-        byte[] program = leafScript.getProgram();
-        ByteArrayOutputStream leafStream = new ByteArrayOutputStream();
-        leafStream.write(Transaction.LEAF_VERSION_TAPSCRIPT);
-        leafStream.writeBytes(new VarInt(program.length).encode());
-        leafStream.writeBytes(program);
-        return Utils.taggedHash("TapLeaf", leafStream.toByteArray());
-    }
 
     public Map<TransactionInput, Map<TransactionSignature, Keystore>> getSignedKeystores(Transaction transaction) {
         Map<TransactionInput, WalletNode> signingNodes = getSigningNodes(transaction);
