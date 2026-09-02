@@ -139,10 +139,10 @@ public class HeaderCheckpointsTest {
     }
 
     /**
-     * A pinned header above the activation height would be describing the wrong chain.
+     * A pinned header above the activation height would be describing headers this wallet must not trust.
      *
-     * The checkpoints are inherited from upstream, which follows the chain that did not adopt the fork, so above the
-     * activation height its hashes are not the ones this wallet must verify against. Pinning one there anchors the
+     * The checkpoints are inherited from upstream, which has not adopted the fork, so above the activation
+     * height its hashes are not the ones this wallet must verify against. Pinning one there anchors the
      * header store above the fork and links every height to a block the connected node does not have, which fails
      * closed for the whole network rather than for one height.
      *
@@ -159,7 +159,7 @@ public class HeaderCheckpointsTest {
                 int maxHeight = HeaderCheckpoints.get(network).getMaxHeight();
                 Assertions.assertTrue(maxHeight < activationHeight,
                         network + " pins height " + maxHeight + ", at or above its activation height " + activationHeight
-                                + ", so the pin describes the chain that did not adopt the fork");
+                                + ", so the pin comes from software that has not adopted the fork");
                 Network.set(null);
             }
         }
