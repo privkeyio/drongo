@@ -1036,6 +1036,18 @@ public class PSBTInput {
         }
     }
 
+    /**
+     * A signature whose hash type names no digest cannot be checked, and an unverifiable signature is reported as one
+     * rather than passed over. Refusing here is what keeps a hash type the script type reserved from reading as
+     * verified.
+     */
+    private void requireDigest(Sha256Hash hash, byte sigHashType) throws PSBTSignatureException {
+        if(hash == null) {
+            throw new PSBTSignatureException("Input " + index + " carries a signature with hash type "
+                    + Integer.toHexString(Byte.toUnsignedInt(sigHashType)) + ", which names no digest for this input");
+        }
+    }
+
     boolean verifySignatures() throws PSBTSignatureException {
         if(getNonWitnessUtxo() != null || getWitnessUtxo() != null) {
             Script signingScript = getSigningScript();
@@ -1048,6 +1060,7 @@ public class PSBTInput {
                 if(isTaproot() && tapKeyPathSignature != null) {
                     ECKey outputKey = P2TR.getPublicKeyFromScript(getUtxo().getScript());
                     Sha256Hash hash = sigHashes.computeIfAbsent(tapKeyPathSignature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
+                    requireDigest(hash, tapKeyPathSignature.sighashFlags);
                     if(!outputKey.verify(hash, tapKeyPathSignature)) {
                         throw new PSBTSignatureException("Tweaked internal key does not verify against provided taproot keypath signature");
                     }
@@ -1055,6 +1068,7 @@ public class PSBTInput {
                     for(ECKey sigPublicKey : getPartialSignatures().keySet()) {
                         TransactionSignature signature = getPartialSignature(sigPublicKey);
                         Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
+                        requireDigest(hash, signature.sighashFlags);
                         if(!sigPublicKey.verify(hash, signature)) {
                             throw new PSBTSignatureException("Partial signature does not verify against provided public key");
                         }
@@ -1082,7 +1096,9 @@ public class PSBTInput {
                 for(TransactionSignature signature : signatures) {
                     Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
 
-                    if(sigPublicKey.verify(hash, signature)) {
+                    //A hash type that names no digest cannot have been signed by any key here, so it attributes to
+                    //none rather than throwing out of an attribution that has no way to report an error
+                    if(hash != null && sigPublicKey.verify(hash, signature)) {
                         signingKeys.put(sigPublicKey, signature);
                     }
                 }
@@ -1198,6 +1214,14 @@ public class PSBTInput {
         return getHashForSignature(connectedScript, localSigHash.value);
     }
 
+    /**
+     * The digest a signature carrying this hash type byte was made over, or null where the byte names none.
+     *
+     * Taproot refuses the hash types BIP341 reserved, and the byte here comes off the wire: a schnorr signature is
+     * 65 bytes with any trailing byte, so anyone who can hand this wallet a PSBT can put a reserved one in it.
+     * Returning null lets the callers say the signature does not verify, which is true, rather than letting an
+     * unchecked exception out of a signature check and taking the screen with it.
+     */
     private Sha256Hash getHashForSignature(Script connectedScript, byte sigHashType) {
         Sha256Hash hash;
 
@@ -1207,7 +1231,11 @@ public class PSBTInput {
         if((sigHashType & SigHash.UNIFIED_FLAG) != 0) {
             //The unified algorithm covers every script type, so it is selected by the opt-in bit rather than
             //by the input's kind. The kind only decides which script type byte and tail the message carries.
-            hash = getHashForUnifiedSignature(connectedScript, sigHashType, scriptType);
+            try {
+                hash = getHashForUnifiedSignature(connectedScript, sigHashType, scriptType);
+            } catch(IllegalArgumentException e) {
+                return null;
+            }
         } else if(scriptType == ScriptType.P2TR) {
             List<TransactionOutput> spentUtxos = psbt.getPsbtInputs().stream().map(PSBTInput::getUtxo).collect(Collectors.toList());
             hash = psbt.getTransaction().hashForTaprootSignature(spentUtxos, index, !P2TR.isScriptType(connectedScript), connectedScript, sigHashType, null);
