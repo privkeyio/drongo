@@ -563,20 +563,38 @@ public class PSBTInput {
     }
 
     /**
-     * Whether taking the incoming declaration would drop the opt-in this input already asks for.
+     * The declaration to take from a combine: the incoming output type, with the opt-in this input already decided.
      *
-     * A device that has not been marked is handed a copy asking for the base type, so the PSBT that comes back
-     * declares the base type while this one still asks for the opt-in. Adopting the copy's declaration would leave
-     * every signer that has not signed yet being asked for the legacy digest, and a transaction that was reported as
-     * replay protected finishing with none. The signatures already gathered are unaffected either way: each names the
-     * type it was made over.
+     * Whether to opt in is this wallet's decision, taken from the chain it is following. What comes back from a
+     * co-signer is somebody else's PSBT, and letting its byte move that decision hands an outside party control of
+     * what this wallet signs.
      *
-     * Any incoming type without the bit counts, not only the exact base of this one. A signer that answers with a
+     * Both directions matter, for different reasons. Clearing the opt-in is the damaging one: an unmarked device is
+     * handed a copy asking for the base type, so the PSBT it returns declares the base type while this one still asks
+     * for the opt-in, and adopting that would leave every signer that has not signed yet being asked for the legacy
+     * digest, finishing a transaction that was reported as replay protected with none of it. Adding the opt-in is the
+     * quieter one: this wallet only declines when it has a reason to, and on a chain that has not reached the
+     * activation height the result is a transaction the network will hold and never mine.
+     *
+     * Any incoming type counts, not only the exact base or unified form of this one. A signer that answers with a
      * different output type than it was handed, a taproot one returning DEFAULT where ALL was asked for being the
-     * ordinary case, would otherwise walk straight past a match on the base type and clear the opt-in anyway.
+     * ordinary case, would otherwise walk straight past a match on the base type.
+     *
+     * The signatures already gathered are unaffected either way: each names the type it was made over.
      */
-    private static boolean clearsOptIn(SigHash current, SigHash incoming) {
-        return current != null && current.isUnified() && !incoming.isUnified();
+    private static SigHash withDecidedOptIn(SigHash current, SigHash incoming) {
+        if(current == null) {
+            //Nothing declared here, so there is no decision of this wallet's to preserve
+            return incoming;
+        }
+
+        if(!current.isUnified()) {
+            return incoming.withoutUnified();
+        }
+
+        //DEFAULT has no output type to carry the bit, so there is no unified form of it to move to
+        SigHash unified = incoming.withUnified();
+        return unified.isUnified() ? unified : current;
     }
 
     void combine(PSBTInput psbtInput) {
@@ -590,8 +608,8 @@ public class PSBTInput {
 
         partialSignatures.putAll(psbtInput.partialSignatures);
 
-        if(psbtInput.sigHash != null && !clearsOptIn(sigHash, psbtInput.sigHash)) {
-            sigHash = psbtInput.sigHash;
+        if(psbtInput.sigHash != null) {
+            sigHash = withDecidedOptIn(sigHash, psbtInput.sigHash);
         }
 
         if(psbtInput.redeemScript != null) {
