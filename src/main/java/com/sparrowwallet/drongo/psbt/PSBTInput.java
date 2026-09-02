@@ -562,6 +562,20 @@ public class PSBTInput {
         return entries;
     }
 
+    /**
+     * Whether taking the incoming declaration would drop the opt-in this input already asks for.
+     *
+     * A device that has not been marked is handed a copy asking for the base type, so the PSBT that comes back
+     * declares the base type while this one still asks for the opt-in. Adopting the copy's declaration would leave
+     * every signer that has not signed yet being asked for the legacy digest, and a transaction that was reported as
+     * replay protected finishing with none. The signatures already gathered are unaffected either way: each names the
+     * type it was made over.
+     */
+    private static boolean clearsOptIn(SigHash current, SigHash incoming) {
+        return current != null && current.isUnified() && !incoming.isUnified()
+                && current.withoutUnified() == incoming.withoutUnified();
+    }
+
     void combine(PSBTInput psbtInput) {
         if(psbtInput.nonWitnessUtxo != null) {
             nonWitnessUtxo = psbtInput.nonWitnessUtxo;
@@ -573,7 +587,7 @@ public class PSBTInput {
 
         partialSignatures.putAll(psbtInput.partialSignatures);
 
-        if(psbtInput.sigHash != null) {
+        if(psbtInput.sigHash != null && !clearsOptIn(sigHash, psbtInput.sigHash)) {
             sigHash = psbtInput.sigHash;
         }
 
@@ -1023,24 +1037,24 @@ public class PSBTInput {
     }
 
     boolean verifySignatures() throws PSBTSignatureException {
-        SigHash localSigHash = getSigHash();
-        if(localSigHash == null) {
-            localSigHash = getDefaultSigHash();
-        }
-
         if(getNonWitnessUtxo() != null || getWitnessUtxo() != null) {
             Script signingScript = getSigningScript();
             if(signingScript != null) {
-                Sha256Hash hash = getHashForSignature(signingScript, localSigHash);
+                //One marked signer is enough, so an input can carry an opted-in signature beside a legacy one while
+                //declaring only one of those types. Each signature names the type it was made over, and that is what
+                //it has to be checked against, the way getSigningKeys() resolves them at finalise time.
+                Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
 
                 if(isTaproot() && tapKeyPathSignature != null) {
                     ECKey outputKey = P2TR.getPublicKeyFromScript(getUtxo().getScript());
+                    Sha256Hash hash = sigHashes.computeIfAbsent(tapKeyPathSignature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
                     if(!outputKey.verify(hash, tapKeyPathSignature)) {
                         throw new PSBTSignatureException("Tweaked internal key does not verify against provided taproot keypath signature");
                     }
                 } else {
                     for(ECKey sigPublicKey : getPartialSignatures().keySet()) {
                         TransactionSignature signature = getPartialSignature(sigPublicKey);
+                        Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
                         if(!sigPublicKey.verify(hash, signature)) {
                             throw new PSBTSignatureException("Partial signature does not verify against provided public key");
                         }
