@@ -26,6 +26,8 @@ public class HeaderChainStateTest {
     private static final String TESTNET_ANCHOR_HASH = "00000000000010047f90a66416b399f265a55d9dbeed30cd320ae2c1cfe4ace3";
     private static final long TESTNET_ANCHOR_BITS = 0x1b0ffff0L;
     private static final int TESTNET_FIRST_MIN_DIFFICULTY_OFFSET = 5;
+    //A period boundary below the mainnet activation height, for the tests that read testnet headers under mainnet rules
+    private static final int FULL_RULES_ANCHOR_HEIGHT = 806399;
 
     //Mainnet difficulty period 15 in full (heights 30240 to 32255) plus the header at 32256, the chain's first ever difficulty rise
     private static final int MAINNET_PERIOD_ANCHOR_HEIGHT = 30239;
@@ -179,8 +181,10 @@ public class HeaderChainStateTest {
         Network.set(Network.MAINNET);
 
         //The attack per-header proof of work cannot stop: a linked run of real, well-formed headers that simply claim an easier target than the chain requires
+        //Anchored below the mainnet activation height, since these are v1 headers and mainnet requires v2 above it. The
+        //difficulty rules under test are relative to the anchor, so any period boundary below that height serves.
         List<BlockHeader> headers = readHeaders("/headers/testnet-window.txt");
-        HeaderChainState chainState = new HeaderChainState(TESTNET_ANCHOR_HEIGHT, Sha256Hash.wrap(TESTNET_ANCHOR_HASH), TESTNET_ANCHOR_BITS);
+        HeaderChainState chainState = new HeaderChainState(FULL_RULES_ANCHOR_HEIGHT, Sha256Hash.wrap(TESTNET_ANCHOR_HASH), TESTNET_ANCHOR_BITS);
         for(int i = 0; i < TESTNET_FIRST_MIN_DIFFICULTY_OFFSET; i++) {
             chainState.add(headers.get(i));
         }
@@ -189,7 +193,7 @@ public class HeaderChainStateTest {
         Assertions.assertEquals(0x1d00ffffL, minimumDifficulty.getDifficultyTarget());
         Assertions.assertTrue(minimumDifficulty.verifyProofOfWork());
         VerificationException e = Assertions.assertThrows(VerificationException.class, () -> chainState.add(minimumDifficulty));
-        Assertions.assertEquals("Header at height " + (TESTNET_ANCHOR_HEIGHT + TESTNET_FIRST_MIN_DIFFICULTY_OFFSET + 1) + " has difficulty target 1d00ffff but the chain requires 1b0ffff0",
+        Assertions.assertEquals("Header at height " + (FULL_RULES_ANCHOR_HEIGHT + TESTNET_FIRST_MIN_DIFFICULTY_OFFSET + 1) + " has difficulty target 1d00ffff but the chain requires 1b0ffff0",
                 e.getMessage());
     }
 

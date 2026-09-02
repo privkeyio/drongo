@@ -61,6 +61,7 @@ public class HeaderChainState {
             throw new VerificationException("Header at height " + (height + 1) + " has difficulty target " + Long.toHexString(header.getDifficultyTarget())
                     + " but the chain requires " + Long.toHexString(requiredBits));
         }
+        requireExpectedHeaderVersion(height + 1, header);
         if(!header.verifyProofOfWork()) {
             throw new VerificationException("Header at height " + (height + 1) + " does not meet its required proof of work target");
         }
@@ -79,6 +80,31 @@ public class HeaderChainState {
             recentTimes.removeFirst();
         }
         recentTimes.addLast(header.getTime());
+    }
+
+    /**
+     * Which proof of work a header at this height is required to carry.
+     *
+     * The header decides for itself which algorithm its hash is taken with: a v1 header is hashed with SHA256d and a
+     * v2 header with BLAKE2b. Nothing else here reads that, so without this check a chain of v1 headers claiming the
+     * shifted target the activation height allows would satisfy the difficulty and proof of work rules while being
+     * mined with SHA256d, at a target chosen for a network that has none of that hashrate. Checked immediately before
+     * the proof of work, since it decides which proof of work the header is claiming to have done.
+     *
+     * Refused in both directions. A v2 header below the height is no more the chain this follows than a v1 header
+     * above it. Networks with no schedule pin nothing and are left alone.
+     */
+    private static void requireExpectedHeaderVersion(int height, BlockHeader header) throws VerificationException {
+        Integer activationHeight = Network.get().getBlake2bHeight();
+        if(activationHeight == null) {
+            return;
+        }
+
+        boolean expectHeaderV2 = height >= activationHeight;
+        if(header.isHeaderV2() != expectHeaderV2) {
+            throw new VerificationException("Header at height " + height + " is a v" + (header.isHeaderV2() ? "2" : "1")
+                    + " header, but the chain requires v" + (expectHeaderV2 ? "2" : "1") + " at that height");
+        }
     }
 
     private long getRequiredDifficulty(BlockHeader header) {

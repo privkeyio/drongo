@@ -16,6 +16,7 @@ import com.sparrowwallet.drongo.psbt.PSBTOutput;
 import com.sparrowwallet.drongo.psbt.PSBTProofException;
 import com.sparrowwallet.drongo.silentpayments.*;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.*;
@@ -1520,6 +1521,51 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
      * @param transaction The signed transaction
      * @return A map keyed with the transactionInput mapped to a map of the signatures and associated keystores that signed it
      */
+    /**
+     * The unified digest for a signature read off a broadcast transaction, or null where the hash type names none.
+     *
+     * The same message the PSBT path builds, assembled from the wallet's own record of the outputs being spent rather
+     * than from a PSBT, since by this point there is no PSBT left to read them from. Every spent output is committed
+     * to, not just this input's, which is what closes CVE-2020-14199.
+     */
+    private static Sha256Hash hashForUnifiedSignature(Wallet signingWallet, Transaction transaction, TransactionInput txInput, Script signingScript, byte sigHashType) {
+        List<TransactionOutput> spentOutputs = new ArrayList<>();
+        for(TransactionInput input : transaction.getInputs()) {
+            BlockTransaction spent = signingWallet.transactions.get(input.getOutpoint().getHash());
+            if(spent == null || spent.getTransaction().getOutputs().size() <= input.getOutpoint().getIndex()) {
+                //Without every spent output the message cannot be built, and guessing one would produce a digest
+                //nothing signed. Reported as unattributable rather than wrong.
+                return null;
+            }
+            spentOutputs.add(spent.getTransaction().getOutputs().get((int)input.getOutpoint().getIndex()));
+        }
+
+        UnifiedScriptType unifiedScriptType;
+        byte[] scriptCode = null;
+        byte[] tapLeafHash = null;
+        if(signingWallet.getScriptType() == P2TR) {
+            if(P2TR.isScriptType(signingScript)) {
+                unifiedScriptType = UnifiedScriptType.TAPROOT;
+            } else {
+                unifiedScriptType = UnifiedScriptType.TAPSCRIPT;
+                tapLeafHash = Transaction.getTapLeafHash(signingScript);
+            }
+        } else if(txInput.hasWitness()) {
+            unifiedScriptType = UnifiedScriptType.WITNESS_V0;
+            scriptCode = signingScript.getProgram();
+        } else {
+            unifiedScriptType = UnifiedScriptType.BARE;
+            scriptCode = signingScript.getProgram();
+        }
+
+        try {
+            return transaction.hashForUnifiedSignature(spentOutputs, txInput.getIndex(), unifiedScriptType, scriptCode, sigHashType, null, tapLeafHash, null);
+        } catch(IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+
     public Map<TransactionInput, Map<TransactionSignature, Keystore>> getSignedKeystores(Transaction transaction) {
         Map<TransactionInput, WalletNode> signingNodes = getSigningNodes(transaction);
         Map<TransactionInput, Map<TransactionSignature, Keystore>> signedKeystores = new LinkedHashMap<>();
@@ -1547,7 +1593,13 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 for(ECKey sigPublicKey : keystoreKeysForNode.keySet()) {
                     for(TransactionSignature signature : signatures) {
                         Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> {
-                            if(signingWallet.getScriptType() == P2TR) {
+                            //Selected by the opt-in bit first, as the PSBT path does. Without this a signature that
+                            //opted in is checked against the legacy digest, never verifies, and the wallet fails to
+                            //recognise its own signatures once the transaction has been broadcast and is read back
+                            //without a PSBT.
+                            if((sigHashType & SigHash.UNIFIED_FLAG) != 0) {
+                                return hashForUnifiedSignature(signingWallet, transaction, txInput, signingScript, sigHashType);
+                            } else if(signingWallet.getScriptType() == P2TR) {
                                 List<TransactionOutput> spentOutputs = transaction.getInputs().stream().map(input -> signingWallet.transactions.get(input.getOutpoint().getHash()).getTransaction().getOutputs().get((int)input.getOutpoint().getIndex())).collect(Collectors.toList());
                                 return transaction.hashForTaprootSignature(spentOutputs, txInput.getIndex(), !P2TR.isScriptType(signingScript), signingScript, sigHashType, null);
                             } else if(txInput.hasWitness()) {
@@ -1557,7 +1609,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                             }
                         });
 
-                        if(sigPublicKey.verify(hash, signature)) {
+                        if(hash != null && sigPublicKey.verify(hash, signature)) {
                             keySignatureMap.put(sigPublicKey, signature);
                         }
                     }
