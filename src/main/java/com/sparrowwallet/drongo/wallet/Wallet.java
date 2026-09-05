@@ -1667,6 +1667,12 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         Map<PSBTInput, WalletNode> signingNodes = new LinkedHashMap<>();
         Map<Script, WalletNode> walletOutputScripts = getWalletOutputScripts();
 
+        //The fallback derives a key for every derivation an input names, and the PSBT names them. The fingerprint
+        //that gates it is in every PSBT you hand a cosigner, so a cosigner can name as many as they like: two
+        //hundred inputs naming two thousand each measured nine seconds. An input names one derivation per key in its
+        //script, so a whole transaction's worth is tens, and this is far past anything a wallet is handed honestly.
+        int[] derivationsLeft = {MAX_FALLBACK_DERIVATIONS};
+
         for(PSBTInput psbtInput : psbt.getPsbtInputs()) {
             TransactionOutput utxo = psbtInput.getUtxo();
 
@@ -1676,7 +1682,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
                 // BIP32-derivation fallback for inputs beyond the wallet's derived address range
                 if(signingNode == null && useDerivationFallback && policyType != PolicyType.SINGLE_SP) {
-                    signingNode = getSigningNodeFromDerivation(psbtInput, scriptPubKey);
+                    signingNode = getSigningNodeFromDerivation(psbtInput, scriptPubKey, derivationsLeft);
                 }
 
                 if(signingNode != null) {
@@ -1688,11 +1694,18 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         return signingNodes;
     }
 
-    private WalletNode getSigningNodeFromDerivation(PSBTInput psbtInput, Script scriptPubKey) {
+    /** The most keys this will derive looking for inputs a wallet holds beyond its derived range. */
+    private static final int MAX_FALLBACK_DERIVATIONS = 10_000;
+
+    private WalletNode getSigningNodeFromDerivation(PSBTInput psbtInput, Script scriptPubKey, int[] derivationsLeft) {
         Map<ECKey, KeyDerivation> derivedPublicKeys = psbtInput.getDerivedPublicKeys();
         Map<ECKey, Map<KeyDerivation, List<Sha256Hash>>> tapDerivedPublicKeys = psbtInput.getTapDerivedPublicKeys();
 
         for(Map.Entry<ECKey, KeyDerivation> entry : derivedPublicKeys.entrySet()) {
+            if(derivationsLeft[0]-- <= 0) {
+                return null;
+            }
+
             WalletNode node = matchDerivation(entry.getValue(), scriptPubKey);
             if(node != null) {
                 return node;
@@ -1701,6 +1714,10 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
         for(Map.Entry<ECKey, Map<KeyDerivation, List<Sha256Hash>>> entry : tapDerivedPublicKeys.entrySet()) {
             for(KeyDerivation keyDerivation : entry.getValue().keySet()) {
+                if(derivationsLeft[0]-- <= 0) {
+                    return null;
+                }
+
                 WalletNode node = matchDerivation(keyDerivation, scriptPubKey);
                 if(node != null) {
                     return node;
