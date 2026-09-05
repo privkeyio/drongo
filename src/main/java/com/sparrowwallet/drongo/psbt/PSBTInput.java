@@ -1098,6 +1098,11 @@ public class PSBTInput {
      * arrange for any hash type they like. Checking against keys the caller already trusts, its own wallet's, answers
      * whether one of those keys signed, which is the question a claim about this transaction rests on.
      *
+     * An input still carrying partial signatures is answered from those, and there each signature is checked against
+     * the key naming it rather than against every key given: the name has to be one of them and the signature still
+     * has to verify under it. So one filed under a key that did not make it is not found, where reading a finalised
+     * input's pushes has no name to go on and checks them all. getVerifiedPartialSignatures keeps those pairs.
+     *
      * It answers with less than is present, never more, and it does not throw. An input with no spent output has no
      * message to build, a hash type that names no message cannot be checked, a script that cannot be read leaves
      * nothing to check against, a tapscript path names a key this cannot recover, and an input asking for more checks
