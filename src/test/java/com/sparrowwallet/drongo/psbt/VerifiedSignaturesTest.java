@@ -4,6 +4,7 @@ import com.sparrowwallet.drongo.Utils;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.Script;
+import com.sparrowwallet.drongo.protocol.ScriptChunk;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.protocol.Sha256Hash;
 import com.sparrowwallet.drongo.protocol.SigHash;
@@ -115,6 +116,31 @@ public class VerifiedSignaturesTest {
             Assertions.assertEquals(0, signature.sighashFlags & SigHash.UNIFIED_FLAG,
                     "a push that is not a signature was counted as an opt-in");
         }
+    }
+
+    /**
+     * An input carrying more to check than any script could spend is not checked at all. The work is a product of the
+     * signatures and the keys, both of which an input chooses, so it has a ceiling; answering nothing past it keeps the
+     * promise that a caller must treat what is missing as absent.
+     */
+    @Test
+    public void an_input_asking_for_more_checks_than_a_script_could_need_is_refused() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+
+        List<ScriptChunk> keyChunks = new ArrayList<>();
+        for(int i = 0; i < 40; i++) {
+            keyChunks.add(new ScriptChunk(33, ECKey.fromPrivate(Utils.hexToBytes(String.format("%064x", i + 2))).getPubKey()));
+        }
+        psbtInput.setWitnessScript(new Script(keyChunks));
+
+        List<byte[]> pushes = new ArrayList<>();
+        for(int i = 0; i < 40; i++) {
+            pushes.add(junk((byte)0x21));
+        }
+        psbtInput.setFinalScriptWitness(new TransactionWitness(null, pushes));
+
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures().isEmpty(),
+                "an input past the ceiling must answer nothing rather than spend the time");
     }
 
     /**

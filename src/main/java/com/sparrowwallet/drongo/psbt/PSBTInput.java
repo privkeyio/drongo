@@ -952,6 +952,12 @@ public class PSBTInput {
     }
 
     /**
+     * The most signature checks worth making for one input, comfortably past the twenty keys consensus will check in a
+     * multisig and far short of what a hostile input can ask for.
+     */
+    private static final int MAX_SIGNATURE_CHECKS = 1024;
+
+    /**
      * The signatures on this input that verify against a key the input names, each with the hash type it was made over.
      *
      * Needed because reading a signature off a signed input is a guess. A push is taken for a signature when it decodes
@@ -987,9 +993,18 @@ public class PSBTInput {
         }
         candidateKeys.addAll(getScriptPublicKeys());
 
+        Collection<TransactionSignature> signatures = getSignatures();
+        //Checking every signature against every key is a product, and both sides are whatever the input carries, so a
+        //hostile one can make it large: 200 pushes against 200 keys measured at two seconds, on whatever thread asked.
+        //A script that spends needs a handful of each, twenty being the most consensus will check, so a shape past this
+        //is not one to spend time on. Answering nothing rather than partly is what the rest of this promises anyway.
+        if((long)candidateKeys.size() * signatures.size() > MAX_SIGNATURE_CHECKS) {
+            return Collections.emptyList();
+        }
+
         List<TransactionSignature> verified = new ArrayList<>();
         Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
-        for(TransactionSignature signature : getSignatures()) {
+        for(TransactionSignature signature : signatures) {
             Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
             if(hash == null) {
                 continue;
