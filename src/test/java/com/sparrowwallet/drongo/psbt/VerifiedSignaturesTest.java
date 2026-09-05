@@ -351,4 +351,45 @@ public class VerifiedSignaturesTest {
 
         Assertions.assertTrue(psbtInput.getVerifiedSignatures(trusted()).isEmpty());
     }
+
+    /**
+     * A partial signature names the key that made it, and that name is written by whoever wrote the input. Verifying
+     * against the named key rather than against every key the caller holds is only sound while the name is checked for
+     * membership and the signature still has to verify: naming a key the caller vouches for buys nothing on its own.
+     */
+    @Test
+    public void a_forged_signature_under_a_trusted_key_name_is_not_counted() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+
+        TransactionSignature real = psbtInput.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+        byte[] forged = real.encodeToBitcoin();
+        forged[10] ^= 0x01;
+        psbtInput.getPartialSignatures().put(ECKey.fromPublicOnly(outputKey),
+                TransactionSignature.decodeFromBitcoin(TransactionSignature.Type.ECDSA, forged, false));
+
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(trusted()).isEmpty(),
+                "the name is not the guarantee, the signature is");
+    }
+
+    /**
+     * And a signature this key really did make, over another transaction, moved into this one. The message is rebuilt
+     * from this transaction, so a signature made over a different one cannot verify against it whoever made it.
+     */
+    @Test
+    public void a_signature_this_key_made_over_another_transaction_is_not_counted() {
+        PSBTInput other = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        TransactionSignature elsewhere = other.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+
+        //A different message: the amount this input spends is committed to, so changing it is enough
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        Script spk = ScriptType.P2WPKH.getOutputScript(PolicyType.SINGLE_HD, key());
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, VALUE - 20_000, spk.getProgram()));
+        psbtInput.getPartialSignatures().clear();
+        psbtInput.getPartialSignatures().put(ECKey.fromPublicOnly(outputKey), elsewhere);
+
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(trusted()).isEmpty(),
+                "a signature over another transaction says nothing about this one");
+    }
 }

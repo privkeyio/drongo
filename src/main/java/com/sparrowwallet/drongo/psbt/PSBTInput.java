@@ -10,6 +10,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import org.bouncycastle.math.ec.ECPoint;
+
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -982,6 +984,57 @@ public class PSBTInput {
         }
     }
 
+    /** As above, for an input whose signatures still name the keys that made them. */
+    private List<TransactionSignature> verifiedPartialSignatures(Script signingScript, Collection<ECKey> trustedKeys) {
+        Map<ECKey, TransactionSignature> partialSignatures = getPartialSignatures();
+        if(partialSignatures.size() > MAX_SIGNATURE_CHECKS) {
+            return Collections.emptyList();
+        }
+
+        //By the point, not by the key. ECKey.equals compares the private part too, so a key the caller vouches for
+        //publicly never matches the same key carrying a private one, and a swept key stopped being counted. The point
+        //is also what makes the two encodings of one key the same key.
+        Set<ECPoint> trusted = new HashSet<>();
+        for(ECKey trustedKey : trustedKeys) {
+            trusted.add(trustedKey.getPubKeyPoint().normalize());
+        }
+
+        List<TransactionSignature> verified = new ArrayList<>();
+        Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
+
+        for(Map.Entry<ECKey, TransactionSignature> entry : partialSignatures.entrySet()) {
+            if(!trusted.contains(entry.getKey().getPubKeyPoint().normalize())) {
+                continue;
+            }
+
+            TransactionSignature signature = entry.getValue();
+            if(!sigHashes.containsKey(signature.sighashFlags)) {
+                Sha256Hash computed = null;
+                try {
+                    computed = getHashForSignature(signingScript, signature.sighashFlags);
+                } catch(RuntimeException e) {
+                    //As above: a message that cannot be built is one that cannot be checked
+                }
+                sigHashes.put(signature.sighashFlags, computed);
+            }
+
+            Sha256Hash hash = sigHashes.get(signature.sighashFlags);
+            if(hash == null) {
+                continue;
+            }
+
+            try {
+                if(entry.getKey().verify(hash, signature)) {
+                    verified.add(signature);
+                }
+            } catch(IllegalArgumentException e) {
+                //A key of the wrong kind for this signature verifies nothing, and says nothing about the others
+            }
+        }
+
+        return verified;
+    }
+
     /**
      * The most signature checks worth making for one input, comfortably past the twenty keys consensus will check in a
      * multisig and far short of what a hostile input can ask for.
@@ -1028,6 +1081,15 @@ public class PSBTInput {
 
         if(signingScript == null) {
             return Collections.emptyList();
+        }
+
+        //A partial signature names the key that made it, so there is no product to do: verify it against that key
+        //alone, once it is one the caller vouches for. The guarantee is unchanged, because the membership test is what
+        //the caller trusts and the file cannot forge it. A stranger naming a key of their own fails that test; one
+        //naming a key of ours has to supply a signature that verifies under it. An 11 of 15 input costs 11 checks
+        //instead of 165, which is the difference between checking a large multisig consolidation and giving up on it.
+        if(getFinalScriptWitness() == null && getFinalScriptSig() == null && getTapKeyPathSignature() == null) {
+            return verifiedPartialSignatures(signingScript, trustedKeys);
         }
 
         Collection<TransactionSignature> signatures = getSignatures();
