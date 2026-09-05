@@ -972,10 +972,11 @@ public class PSBTInput {
      * arrange for any hash type they like. Checking against keys the caller already trusts, its own wallet's, answers
      * whether one of those keys signed, which is the question a claim about this transaction rests on.
      *
-     * It answers with less than is present, never more. An input with no spent output has no message to build, a hash
-     * type that names no message cannot be checked, a tapscript path names a key this cannot recover, and an input
-     * asking for more checks than any script could need is refused outright. A caller reporting a protection therefore
-     * has to treat what is missing as absent.
+     * It answers with less than is present, never more, and it does not throw. An input with no spent output has no
+     * message to build, a hash type that names no message cannot be checked, a script that cannot be read leaves
+     * nothing to check against, a tapscript path names a key this cannot recover, and an input asking for more checks
+     * than any script could need is refused outright. Every one of those answers with fewer signatures, so a caller
+     * reporting a protection has to treat what is missing as absent.
      */
     public List<TransactionSignature> getVerifiedSignatures(Collection<ECKey> trustedKeys) {
         //The spent output is what the message is built over, and getSigningScript reads it, so its absence is answered
@@ -984,7 +985,16 @@ public class PSBTInput {
             return Collections.emptyList();
         }
 
-        Script signingScript = getSigningScript();
+        Script signingScript;
+        try {
+            signingScript = getSigningScript();
+        } catch(RuntimeException e) {
+            //Reading the script an input would be checked against parses what the input carries, and a final scriptSig
+            //with nothing script shaped in it leaves that reading with nothing to unwrap. A caller drawing a label from
+            //this must get an answer rather than an exception
+            return Collections.emptyList();
+        }
+
         if(signingScript == null) {
             return Collections.emptyList();
         }
@@ -1007,7 +1017,7 @@ public class PSBTInput {
                 Sha256Hash computed = null;
                 try {
                     computed = getHashForSignature(signingScript, signature.sighashFlags);
-                } catch(IllegalArgumentException e) {
+                } catch(RuntimeException e) {
                     //A message that cannot be built is one that cannot be checked, which is the answer this gives
                     //anyway. It must not leave by way of an exception: a PSBT where another input carries no spent
                     //output is enough to reach this, and the caller is drawing a label rather than signing.
