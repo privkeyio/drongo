@@ -951,6 +951,92 @@ public class PSBTInput {
         }
     }
 
+    /**
+     * The most signature checks worth making for one input, comfortably past the twenty keys consensus will check in a
+     * multisig and far short of what a hostile input can ask for.
+     */
+    private static final int MAX_SIGNATURE_CHECKS = 1024;
+
+    /**
+     * The signatures on this input that verify against one of the given keys, each with the hash type it was made over.
+     *
+     * Needed because reading a signature off a signed input is a guess. A push is taken for a signature when it decodes
+     * as one, and any 64 or 65 byte push decodes as a Schnorr signature whose hash type is simply its last byte, so a
+     * taproot control block, an uncompressed public key or a run of miner data in a coinbase all read as signatures
+     * carrying whatever byte they happen to end with. Anything that draws a conclusion from a hash type has to know it
+     * read a real one, and the only way to know that is to check the signature against the message it names.
+     *
+     * The keys are the caller's to supply, and that is the whole of the guarantee. Every key an input carries is written
+     * by whoever wrote the input: a partial signature names its own key, a derivation names any key at all, and a final
+     * witness is arbitrary pushes. Checking against those answers "did someone sign something", which a stranger can
+     * arrange for any hash type they like. Checking against keys the caller already trusts, its own wallet's, answers
+     * whether one of those keys signed, which is the question a claim about this transaction rests on.
+     *
+     * It answers with less than is present, never more. An input with no spent output has no message to build, a hash
+     * type that names no message cannot be checked, a tapscript path names a key this cannot recover, and an input
+     * asking for more checks than any script could need is refused outright. A caller reporting a protection therefore
+     * has to treat what is missing as absent.
+     */
+    public List<TransactionSignature> getVerifiedSignatures(Collection<ECKey> trustedKeys) {
+        //The spent output is what the message is built over, and getSigningScript reads it, so its absence is answered
+        //here rather than thrown from there
+        if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null) {
+            return Collections.emptyList();
+        }
+
+        Script signingScript = getSigningScript();
+        if(signingScript == null) {
+            return Collections.emptyList();
+        }
+
+        Collection<TransactionSignature> signatures = getSignatures();
+        //Checking every signature against every key is a product, and the signatures are whatever the input carries, so
+        //a hostile one can make it large: 200 pushes against 200 keys measured at two seconds, on whatever thread asked.
+        //A script that spends needs a handful of each, twenty being the most consensus will check, so a shape past this
+        //is not one to spend time on. Answering nothing rather than partly is what the rest of this promises anyway.
+        if((long)trustedKeys.size() * signatures.size() > MAX_SIGNATURE_CHECKS) {
+            return Collections.emptyList();
+        }
+
+        List<TransactionSignature> verified = new ArrayList<>();
+        Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
+        for(TransactionSignature signature : signatures) {
+            //Remembered even when it is null, so a hash type that names no message is worked out once rather than for
+            //every signature carrying it: building one streams every input and every spent output
+            if(!sigHashes.containsKey(signature.sighashFlags)) {
+                Sha256Hash computed = null;
+                try {
+                    computed = getHashForSignature(signingScript, signature.sighashFlags);
+                } catch(IllegalArgumentException e) {
+                    //A message that cannot be built is one that cannot be checked, which is the answer this gives
+                    //anyway. It must not leave by way of an exception: a PSBT where another input carries no spent
+                    //output is enough to reach this, and the caller is drawing a label rather than signing.
+                }
+                sigHashes.put(signature.sighashFlags, computed);
+            }
+
+            Sha256Hash hash = sigHashes.get(signature.sighashFlags);
+            if(hash == null) {
+                continue;
+            }
+
+            for(ECKey trustedKey : trustedKeys) {
+                try {
+                    if(trustedKey.verify(hash, signature)) {
+                        verified.add(signature);
+                        break;
+                    }
+                } catch(IllegalArgumentException e) {
+                    //A key of the wrong kind for this signature verifies nothing, and says nothing about the others.
+                    //Anything else, a missing native library among them, belongs to the caller: a check that cannot run
+                    //must not read as a check that failed
+                }
+            }
+        }
+
+        return verified;
+    }
+
     private SigHash getDefaultSigHash() {
         if(isTaproot()) {
             return SigHash.DEFAULT;
