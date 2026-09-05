@@ -124,6 +124,60 @@ public class VerifiedSignaturesTest {
     }
 
     /**
+     * Taproot, which is where the false positive this exists for actually lives: a control block for a two leaf tree is
+     * exactly 65 bytes, so an ordinary script path spend carries one push that decodes as a signature and reports
+     * whatever its last byte says, half the time an opt-in.
+     *
+     * A key path signature is a real Schnorr signature over the key path message, and verifies against the output key.
+     * A control block sitting beside it does not verify against anything.
+     */
+    @Test
+    public void a_taproot_key_path_signature_verifies_and_a_control_block_does_not() {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2TR.getOutputKey(PolicyType.SINGLE_HD, key());
+        Script spk = ScriptType.P2TR.getOutputScript(PolicyType.SINGLE_HD, key());
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(VALUE - 10_000, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, VALUE, spk.getProgram()));
+        psbtInput.setSigHash(SigHash.fromByte(unifiedAll));
+        psbtInput.sign(ScriptType.P2TR.getOutputKey(PolicyType.SINGLE_HD, key()));
+
+        TransactionSignature keyPath = psbtInput.getTapKeyPathSignature();
+        Assertions.assertNotNull(keyPath, "the fixture must carry a key path signature");
+
+        List<ECKey> trusted = List.of(ECKey.fromPublicOnly(outputKey));
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures(trusted);
+        Assertions.assertEquals(1, verified.size(), "the key path signature did not verify against the output key");
+        Assertions.assertEquals(unifiedAll, verified.get(0).sighashFlags);
+
+        //Now the shape a script path spend has: the signature is gone and a control block sits where a push would
+        byte[] controlBlock = new byte[65];
+        Arrays.fill(controlBlock, (byte)0x11);
+        controlBlock[0] = (byte)0xc0;
+        controlBlock[64] = 0x21;
+        PSBT other = new PSBT(transaction);
+        PSBTInput scriptPath = other.getPsbtInputs().get(0);
+        scriptPath.setWitnessUtxo(new TransactionOutput(null, VALUE, spk.getProgram()));
+        scriptPath.setFinalScriptWitness(new TransactionWitness(null, List.of(controlBlock)));
+
+        int looksLikeOptIn = 0;
+        for(TransactionSignature signature : scriptPath.getSignatures()) {
+            if((signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0) {
+                looksLikeOptIn++;
+            }
+        }
+        Assertions.assertEquals(1, looksLikeOptIn, "the unchecked reading must be fooled by a control block");
+        Assertions.assertTrue(scriptPath.getVerifiedSignatures(trusted).isEmpty(),
+                "a control block was counted as a signature that opts in");
+    }
+
+    /**
      * A finalised multisig, which is the shape that hides its keys.
      *
      * Finalising clears the witness script and the partial signatures, so the quorum's keys are left only inside the
