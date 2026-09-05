@@ -332,4 +332,53 @@ public class QuorumFinaliseTest {
                 psbt.getPsbtInputs().get(0).getFinalScriptWitness().getSignatures()),
                 "nothing opts in, so this has to keep exactly what key order kept");
     }
+
+    /**
+     * The same signature filed under two keys must not take two slots.
+     *
+     * Preference is decided by asking whether a signature is among the verified ones, and TransactionSignature
+     * compares by hash type and r and s. So a PSBT that files a byte identical copy of a verified opted-in signature
+     * under a second quorum key answers yes for both, and the witness then carries it in a slot whose key does not
+     * verify it, which does not spend. Key order kept the two lowest keys and produced a valid witness, so preferring
+     * on a value match turned a failure that needed luck into one that happens every time.
+     */
+    @Test
+    public void one_signature_filed_under_two_keys_does_not_take_two_slots() throws Exception {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        Wallet wallet = wallet(ScriptType.P2WSH);
+        WalletNode node = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = wallet.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(90_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        psbtInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+        psbtInput.setSigHash(SigHash.fromByte(unifiedAll));
+
+        for(Keystore keystore : wallet.getKeystores()) {
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+
+        //The middle key's signature, copied over the first key's, so the copy is met first in key order and can take
+        //a slot from a signature that verifies. It verifies under the middle key and under nothing else.
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        ECKey first = ordered.get(0);
+        ECKey middle = ordered.get(1);
+        psbtInput.getPartialSignatures().put(first, psbtInput.getPartialSignature(middle));
+
+        wallet.finalise(psbt);
+
+        //Whatever it kept, each kept signature has to verify under the key holding its slot, or this will not spend
+        PSBTInput finalised = psbt.getPsbtInputs().get(0);
+        List<TransactionSignature> kept = new ArrayList<>(finalised.getFinalScriptWitness().getSignatures());
+        Assertions.assertEquals(2, kept.size(), "a 2 of 3 keeps two");
+        Assertions.assertEquals(2, kept.stream().distinct().count(),
+                "the same signature was kept twice, in a slot whose key does not verify it");
+    }
 }

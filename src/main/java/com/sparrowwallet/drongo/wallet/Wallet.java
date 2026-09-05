@@ -2042,13 +2042,16 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         //alone would put one that verifies nothing ahead of one that does, every time rather than by luck. Where
         //nothing can be checked this finds none of them preferred and falls back to key order, which is what it did
         //before any of this.
-        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures(pubKeySignatures.keySet());
+        //By the pair, not by the signature. A signature does not carry the key that made it and compares by hash type
+        //and by r and s, so asking whether it is among the verified ones answers yes for a second key that files a
+        //copy of it: both then took a slot, and the one whose key does not verify it does not spend.
+        Map<ECKey, TransactionSignature> verified = psbtInput.getVerifiedPartialSignatures(pubKeySignatures.keySet());
 
         List<ECKey> keep = new ArrayList<>();
         for(ECKey pubKey : present) {
             TransactionSignature signature = pubKeySignatures.get(pubKey);
             if(keep.size() < threshold && (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0
-                    && verified.contains(signature)) {
+                    && signature.equals(verified.get(pubKey))) {
                 keep.add(pubKey);
             }
         }

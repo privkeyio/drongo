@@ -996,11 +996,34 @@ public class PSBTInput {
         }
     }
 
+    /**
+     * As getVerifiedSignatures, keeping the key each signature verified under.
+     *
+     * A signature does not carry the key that made it, and TransactionSignature compares by hash type and by r and s,
+     * so a caller pairing the two by value pairs a signature with any key that files a copy of it. Only the pair is
+     * the fact, and a caller choosing which signature goes in which slot needs the pair rather than the signature.
+     */
+    public Map<ECKey, TransactionSignature> getVerifiedPartialSignatures(Collection<ECKey> trustedKeys) {
+        if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null
+                || getFinalScriptWitness() != null || getFinalScriptSig() != null || getTapKeyPathSignature() != null) {
+            return Collections.emptyMap();
+        }
+
+        Script signingScript;
+        try {
+            signingScript = getSigningScript();
+        } catch(RuntimeException e) {
+            return Collections.emptyMap();
+        }
+
+        return signingScript == null ? Collections.emptyMap() : verifiedPartialSignatures(signingScript, trustedKeys);
+    }
+
     /** As above, for an input whose signatures still name the keys that made them. */
-    private List<TransactionSignature> verifiedPartialSignatures(Script signingScript, Collection<ECKey> trustedKeys) {
+    private Map<ECKey, TransactionSignature> verifiedPartialSignatures(Script signingScript, Collection<ECKey> trustedKeys) {
         Map<ECKey, TransactionSignature> partialSignatures = getPartialSignatures();
         if(partialSignatures.size() > MAX_SIGNATURE_CHECKS) {
-            return Collections.emptyList();
+            return Collections.emptyMap();
         }
 
         //By the point, not by the key. ECKey.equals compares the private part too, so a key the caller vouches for
@@ -1014,7 +1037,7 @@ public class PSBTInput {
             }
         }
 
-        List<TransactionSignature> verified = new ArrayList<>();
+        Map<ECKey, TransactionSignature> verified = new LinkedHashMap<>();
         Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
 
         for(Map.Entry<ECKey, TransactionSignature> entry : partialSignatures.entrySet()) {
@@ -1044,7 +1067,7 @@ public class PSBTInput {
 
             try {
                 if(entry.getKey().verify(hash, signature)) {
-                    verified.add(signature);
+                    verified.put(entry.getKey(), signature);
                 }
             } catch(IllegalArgumentException e) {
                 //A key of the wrong kind for this signature verifies nothing, and says nothing about the others
@@ -1108,7 +1131,7 @@ public class PSBTInput {
         //naming a key of ours has to supply a signature that verifies under it. An 11 of 15 input costs 11 checks
         //instead of 165, which is the difference between checking a large multisig consolidation and giving up on it.
         if(getFinalScriptWitness() == null && getFinalScriptSig() == null && getTapKeyPathSignature() == null) {
-            return verifiedPartialSignatures(signingScript, trustedKeys);
+            return new ArrayList<>(verifiedPartialSignatures(signingScript, trustedKeys).values());
         }
 
         Collection<TransactionSignature> signatures = getSignatures();
