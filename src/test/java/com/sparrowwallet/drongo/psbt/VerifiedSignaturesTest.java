@@ -1,0 +1,136 @@
+package com.sparrowwallet.drongo.psbt;
+
+import com.sparrowwallet.drongo.Utils;
+import com.sparrowwallet.drongo.crypto.ECKey;
+import com.sparrowwallet.drongo.policy.PolicyType;
+import com.sparrowwallet.drongo.protocol.Script;
+import com.sparrowwallet.drongo.protocol.ScriptType;
+import com.sparrowwallet.drongo.protocol.Sha256Hash;
+import com.sparrowwallet.drongo.protocol.SigHash;
+import com.sparrowwallet.drongo.protocol.Transaction;
+import com.sparrowwallet.drongo.protocol.TransactionOutput;
+import com.sparrowwallet.drongo.protocol.TransactionSignature;
+import com.sparrowwallet.drongo.protocol.TransactionWitness;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+/**
+ * Telling a signature from a push that merely looks like one.
+ *
+ * Any 64 or 65 byte push decodes as a Schnorr signature whose hash type is its last byte, and nothing in that decode is
+ * checked, so reading hash types off a signed input reports whatever those bytes happen to say. A control block, an
+ * uncompressed public key and a run of miner data in a coinbase are all that shape. The signature is the thing that can
+ * be checked, and this checks it.
+ */
+public class VerifiedSignaturesTest {
+    private static final String PRIVATE_KEY = "11".repeat(32);
+    private static final long VALUE = 100_000_000L;
+
+    private ECKey key() {
+        return ECKey.fromPrivate(Utils.hexToBytes(PRIVATE_KEY));
+    }
+
+    /**
+     * One P2WPKH input signed for real, with the hash type asked for.
+     */
+    private PSBTInput signedInput(byte sigHashType) {
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        Script spk = ScriptType.P2WPKH.getOutputScript(PolicyType.SINGLE_HD, key());
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(VALUE - 10_000, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, VALUE, spk.getProgram()));
+        psbtInput.setSigHash(SigHash.fromByte(sigHashType));
+        psbtInput.sign(outputKey);
+
+        return psbtInput;
+    }
+
+    /** The 65 byte push that a control block, an uncompressed key or miner data all look like. */
+    private byte[] junk(byte last) {
+        byte[] push = new byte[65];
+        Arrays.fill(push, (byte)0x11);
+        push[64] = last;
+        return push;
+    }
+
+    @Test
+    public void a_real_signature_verifies_and_keeps_its_hash_type() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures();
+        Assertions.assertEquals(1, verified.size(), "the signature this input really carries did not verify");
+        Assertions.assertEquals(SigHash.ALL.byteValue(), verified.get(0).sighashFlags);
+    }
+
+    @Test
+    public void an_opted_in_signature_is_read_as_opted_in() {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        PSBTInput psbtInput = signedInput(unifiedAll);
+
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures();
+        Assertions.assertEquals(1, verified.size());
+        Assertions.assertEquals(unifiedAll, verified.get(0).sighashFlags);
+        Assertions.assertNotEquals(0, verified.get(0).sighashFlags & SigHash.UNIFIED_FLAG);
+    }
+
+    /**
+     * The case this exists for. The witness carries a real signature that does not opt in, beside a push that is not a
+     * signature at all and ends in a byte that says it opts in. Read without checking, the input reports an opt-in it
+     * does not have.
+     */
+    @Test
+    public void a_push_that_only_looks_like_a_signature_is_not_counted() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        TransactionSignature real = psbtInput.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+
+        List<byte[]> pushes = new ArrayList<>();
+        pushes.add(real.encodeToBitcoin());
+        pushes.add(outputKey.getPubKey());
+        pushes.add(junk((byte)0x21));
+        psbtInput.setFinalScriptWitness(new TransactionWitness(null, pushes));
+
+        int looksLikeOptIn = 0;
+        for(TransactionSignature signature : psbtInput.getSignatures()) {
+            if((signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0) {
+                looksLikeOptIn++;
+            }
+        }
+        Assertions.assertEquals(1, looksLikeOptIn, "the unchecked reading must be fooled, or this proves nothing");
+
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures();
+        Assertions.assertEquals(1, verified.size(), "only the signature that verifies belongs here");
+        Assertions.assertEquals(SigHash.ALL.byteValue(), verified.get(0).sighashFlags);
+        for(TransactionSignature signature : verified) {
+            Assertions.assertEquals(0, signature.sighashFlags & SigHash.UNIFIED_FLAG,
+                    "a push that is not a signature was counted as an opt-in");
+        }
+    }
+
+    /**
+     * An input with no spent output cannot have its message built, so nothing on it can be checked. Reporting nothing is
+     * what makes a caller treat the protection as absent rather than as present.
+     */
+    @Test
+    public void nothing_verifies_where_there_is_no_message_to_verify_against() {
+        Transaction transaction = new Transaction();
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(VALUE, ScriptType.P2WPKH.getOutputScript(PolicyType.SINGLE_HD, key()));
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setFinalScriptWitness(new TransactionWitness(null, List.of(junk((byte)0x21), junk((byte)0x21))));
+
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures().isEmpty());
+    }
+}

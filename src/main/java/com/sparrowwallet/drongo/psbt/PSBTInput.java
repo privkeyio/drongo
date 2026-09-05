@@ -951,6 +951,101 @@ public class PSBTInput {
         }
     }
 
+    /**
+     * The signatures on this input that verify against a key the input names, each with the hash type it was made over.
+     *
+     * Needed because reading a signature off a signed input is a guess. A push is taken for a signature when it decodes
+     * as one, and any 64 or 65 byte push decodes as a Schnorr signature whose hash type is simply its last byte, so a
+     * taproot control block, an uncompressed public key or a run of miner data in a coinbase all read as signatures
+     * carrying whatever byte they happen to end with. Anything that draws a conclusion from a hash type has to know it
+     * read a real one, and the only way to know that is to check the signature against the message it names.
+     *
+     * A signature that cannot be checked is left out rather than assumed. That covers an input with no spent output to
+     * build the message from, a hash type that names no message, and a script whose signing key this cannot recover,
+     * which today means a tapscript path. Callers therefore get fewer signatures than are present, never more, and a
+     * caller reporting a protection has to treat what is missing as absent rather than as present.
+     */
+    public List<TransactionSignature> getVerifiedSignatures() {
+        //The spent output is what the message is built over, and getSigningScript reads it, so its absence is answered
+        //here rather than thrown from there
+        TransactionOutput utxo = getUtxo();
+        if(utxo == null) {
+            return Collections.emptyList();
+        }
+
+        Script signingScript = getSigningScript();
+        if(signingScript == null) {
+            return Collections.emptyList();
+        }
+
+        Set<ECKey> candidateKeys = new LinkedHashSet<>(getPartialSignatures().keySet());
+        if(P2TR.isScriptType(utxo.getScript())) {
+            ECKey outputKey = P2TR.getPublicKeyFromScript(utxo.getScript());
+            if(outputKey != null) {
+                candidateKeys.add(outputKey);
+            }
+        }
+        candidateKeys.addAll(getScriptPublicKeys());
+
+        List<TransactionSignature> verified = new ArrayList<>();
+        Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
+        for(TransactionSignature signature : getSignatures()) {
+            Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
+            if(hash == null) {
+                continue;
+            }
+
+            for(ECKey candidateKey : candidateKeys) {
+                try {
+                    if(candidateKey.verify(hash, signature)) {
+                        verified.add(signature);
+                        break;
+                    }
+                } catch(Exception e) {
+                    //A key of the wrong kind for this signature verifies nothing, and says nothing about the others
+                }
+            }
+        }
+
+        return verified;
+    }
+
+    /**
+     * Every public key this input names anywhere a signature could be checked against: the two final scripts, and the
+     * redeem and witness scripts that say what those satisfy.
+     */
+    private Set<ECKey> getScriptPublicKeys() {
+        Set<ECKey> publicKeys = new LinkedHashSet<>();
+        List<ScriptChunk> chunks = new ArrayList<>();
+        if(getFinalScriptSig() != null) {
+            chunks.addAll(getFinalScriptSig().getChunks());
+        }
+        if(getFinalScriptWitness() != null) {
+            chunks.addAll(getFinalScriptWitness().asScriptChunks());
+        }
+        if(getRedeemScript() != null) {
+            chunks.addAll(getRedeemScript().getChunks());
+        }
+        if(getWitnessScript() != null) {
+            chunks.addAll(getWitnessScript().getChunks());
+        }
+
+        for(ScriptChunk chunk : chunks) {
+            if(chunk.isPubKey()) {
+                publicKeys.add(chunk.getPubKey());
+            } else if(chunk.getData() != null && chunk.getData().length == 32) {
+                //An x only key, which is how a tapscript names one
+                try {
+                    publicKeys.add(ECKey.fromPublicOnly(Utils.concat(new byte[] {0x02}, chunk.getData())));
+                } catch(Exception e) {
+                    //Not a key
+                }
+            }
+        }
+
+        return publicKeys;
+    }
+
     private SigHash getDefaultSigHash() {
         if(isTaproot()) {
             return SigHash.DEFAULT;
