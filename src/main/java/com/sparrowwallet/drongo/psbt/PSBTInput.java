@@ -958,7 +958,7 @@ public class PSBTInput {
     private static final int MAX_SIGNATURE_CHECKS = 1024;
 
     /**
-     * The signatures on this input that verify against a key the input names, each with the hash type it was made over.
+     * The signatures on this input that verify against one of the given keys, each with the hash type it was made over.
      *
      * Needed because reading a signature off a signed input is a guess. A push is taken for a signature when it decodes
      * as one, and any 64 or 65 byte push decodes as a Schnorr signature whose hash type is simply its last byte, so a
@@ -966,16 +966,21 @@ public class PSBTInput {
      * carrying whatever byte they happen to end with. Anything that draws a conclusion from a hash type has to know it
      * read a real one, and the only way to know that is to check the signature against the message it names.
      *
-     * A signature that cannot be checked is left out rather than assumed. That covers an input with no spent output to
-     * build the message from, a hash type that names no message, and a script whose signing key this cannot recover,
-     * which today means a tapscript path. Callers therefore get fewer signatures than are present, never more, and a
-     * caller reporting a protection has to treat what is missing as absent rather than as present.
+     * The keys are the caller's to supply, and that is the whole of the guarantee. Every key an input carries is written
+     * by whoever wrote the input: a partial signature names its own key, a derivation names any key at all, and a final
+     * witness is arbitrary pushes. Checking against those answers "did someone sign something", which a stranger can
+     * arrange for any hash type they like. Checking against keys the caller already trusts, its own wallet's, answers
+     * whether one of those keys signed, which is the question a claim about this transaction rests on.
+     *
+     * It answers with less than is present, never more. An input with no spent output has no message to build, a hash
+     * type that names no message cannot be checked, a tapscript path names a key this cannot recover, and an input
+     * asking for more checks than any script could need is refused outright. A caller reporting a protection therefore
+     * has to treat what is missing as absent.
      */
-    public List<TransactionSignature> getVerifiedSignatures() {
+    public List<TransactionSignature> getVerifiedSignatures(Collection<ECKey> trustedKeys) {
         //The spent output is what the message is built over, and getSigningScript reads it, so its absence is answered
         //here rather than thrown from there
-        TransactionOutput utxo = getUtxo();
-        if(utxo == null) {
+        if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null) {
             return Collections.emptyList();
         }
 
@@ -984,26 +989,12 @@ public class PSBTInput {
             return Collections.emptyList();
         }
 
-        Set<ECKey> candidateKeys = new LinkedHashSet<>(getPartialSignatures().keySet());
-        if(P2TR.isScriptType(utxo.getScript())) {
-            ECKey outputKey = P2TR.getPublicKeyFromScript(utxo.getScript());
-            if(outputKey != null) {
-                candidateKeys.add(outputKey);
-            }
-        }
-        candidateKeys.addAll(getScriptPublicKeys(signingScript, utxo));
-        if(candidateKeys.isEmpty()) {
-            //Nothing to check against, so no message is worth building: each one streams every input and every spent
-            //output, and the answer is already known to be empty
-            return Collections.emptyList();
-        }
-
         Collection<TransactionSignature> signatures = getSignatures();
-        //Checking every signature against every key is a product, and both sides are whatever the input carries, so a
-        //hostile one can make it large: 200 pushes against 200 keys measured at two seconds, on whatever thread asked.
+        //Checking every signature against every key is a product, and the signatures are whatever the input carries, so
+        //a hostile one can make it large: 200 pushes against 200 keys measured at two seconds, on whatever thread asked.
         //A script that spends needs a handful of each, twenty being the most consensus will check, so a shape past this
         //is not one to spend time on. Answering nothing rather than partly is what the rest of this promises anyway.
-        if((long)candidateKeys.size() * signatures.size() > MAX_SIGNATURE_CHECKS) {
+        if((long)trustedKeys.size() * signatures.size() > MAX_SIGNATURE_CHECKS) {
             return Collections.emptyList();
         }
 
@@ -1015,51 +1006,21 @@ public class PSBTInput {
                 continue;
             }
 
-            for(ECKey candidateKey : candidateKeys) {
+            for(ECKey trustedKey : trustedKeys) {
                 try {
-                    if(candidateKey.verify(hash, signature)) {
+                    if(trustedKey.verify(hash, signature)) {
                         verified.add(signature);
                         break;
                     }
                 } catch(IllegalArgumentException e) {
-                    //A candidate that is not a key of the kind this signature needs verifies nothing, and says nothing
-                    //about the others. Anything else, a missing native library among them, belongs to the caller: a
-                    //check that cannot run must not read as a check that failed
+                    //A key of the wrong kind for this signature verifies nothing, and says nothing about the others.
+                    //Anything else, a missing native library among them, belongs to the caller: a check that cannot run
+                    //must not read as a check that failed
                 }
             }
         }
 
         return verified;
-    }
-
-    /**
-     * Every public key this input names anywhere a signature could be checked against.
-     *
-     * The signing script is the first source and the one that matters after finalising, which clears the redeem and
-     * witness scripts and the partial signatures: a finalised multisig then names its keys only inside the script the
-     * final witness carries, and reading the input's own fields would find nothing at all. The spent output covers the
-     * scripts that name a key directly, the derivations cover what this wallet knows about the input and survive
-     * finalising, and the final scripts carry the key a single signature input pushes beside its signature.
-     */
-    private Set<ECKey> getScriptPublicKeys(Script signingScript, TransactionOutput utxo) {
-        Set<ECKey> publicKeys = new LinkedHashSet<>(getDerivedPublicKeys().keySet());
-
-        List<ScriptChunk> chunks = new ArrayList<>(signingScript.getChunks());
-        chunks.addAll(utxo.getScript().getChunks());
-        if(getFinalScriptSig() != null) {
-            chunks.addAll(getFinalScriptSig().getChunks());
-        }
-        if(getFinalScriptWitness() != null) {
-            chunks.addAll(getFinalScriptWitness().asScriptChunks());
-        }
-
-        for(ScriptChunk chunk : chunks) {
-            if(chunk.isPubKey()) {
-                publicKeys.add(chunk.getPubKey());
-            }
-        }
-
-        return publicKeys;
     }
 
     private SigHash getDefaultSigHash() {

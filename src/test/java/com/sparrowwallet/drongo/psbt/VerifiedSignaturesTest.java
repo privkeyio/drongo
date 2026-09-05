@@ -35,6 +35,11 @@ public class VerifiedSignaturesTest {
         return ECKey.fromPrivate(Utils.hexToBytes(PRIVATE_KEY));
     }
 
+    /** What a caller vouches for: the key this fixture's wallet would hold. */
+    private List<ECKey> trusted() {
+        return List.of(ECKey.fromPublicOnly(ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key())));
+    }
+
     /**
      * One P2WPKH input signed for real, with the hash type asked for.
      */
@@ -68,7 +73,7 @@ public class VerifiedSignaturesTest {
     public void a_real_signature_verifies_and_keeps_its_hash_type() {
         PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
 
-        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures();
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures(trusted());
         Assertions.assertEquals(1, verified.size(), "the signature this input really carries did not verify");
         Assertions.assertEquals(SigHash.ALL.byteValue(), verified.get(0).sighashFlags);
     }
@@ -78,7 +83,7 @@ public class VerifiedSignaturesTest {
         byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
         PSBTInput psbtInput = signedInput(unifiedAll);
 
-        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures();
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures(trusted());
         Assertions.assertEquals(1, verified.size());
         Assertions.assertEquals(unifiedAll, verified.get(0).sighashFlags);
         Assertions.assertNotEquals(0, verified.get(0).sighashFlags & SigHash.UNIFIED_FLAG);
@@ -109,7 +114,7 @@ public class VerifiedSignaturesTest {
         }
         Assertions.assertEquals(1, looksLikeOptIn, "the unchecked reading must be fooled, or this proves nothing");
 
-        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures();
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures(trusted());
         Assertions.assertEquals(1, verified.size(), "only the signature that verifies belongs here");
         Assertions.assertEquals(SigHash.ALL.byteValue(), verified.get(0).sighashFlags);
         for(TransactionSignature signature : verified) {
@@ -161,7 +166,8 @@ public class VerifiedSignaturesTest {
         psbtInput.setFinalScriptWitness(new TransactionWitness(null, pushes));
         Assertions.assertNull(psbtInput.getWitnessScript(), "finalising must have cleared what this has to recover");
 
-        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures();
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures(
+                List.of(ECKey.fromPublicOnly(first), ECKey.fromPublicOnly(second)));
         Assertions.assertEquals(2, verified.size(), "the quorum's signatures were not found once finalised");
         for(TransactionSignature signature : verified) {
             Assertions.assertEquals(unifiedAll, signature.sighashFlags);
@@ -177,11 +183,10 @@ public class VerifiedSignaturesTest {
     public void an_input_asking_for_more_checks_than_a_script_could_need_is_refused() {
         PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
 
-        List<ScriptChunk> keyChunks = new ArrayList<>();
+        List<ECKey> manyKeys = new ArrayList<>();
         for(int i = 0; i < 40; i++) {
-            keyChunks.add(new ScriptChunk(33, ECKey.fromPrivate(Utils.hexToBytes(String.format("%064x", i + 2))).getPubKey()));
+            manyKeys.add(ECKey.fromPrivate(Utils.hexToBytes(String.format("%064x", i + 2))));
         }
-        psbtInput.setWitnessScript(new Script(keyChunks));
 
         List<byte[]> pushes = new ArrayList<>();
         for(int i = 0; i < 40; i++) {
@@ -189,8 +194,31 @@ public class VerifiedSignaturesTest {
         }
         psbtInput.setFinalScriptWitness(new TransactionWitness(null, pushes));
 
-        Assertions.assertTrue(psbtInput.getVerifiedSignatures().isEmpty(),
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(manyKeys).isEmpty(),
                 "an input past the ceiling must answer nothing rather than spend the time");
+    }
+
+    /**
+     * A signature by a key the caller does not vouch for, which is the shape a hostile PSBT takes.
+     *
+     * Every key an input carries is written by whoever wrote the input, so a stranger can sign the message for any hash
+     * type they like with a key of their own and name it in the input. Checking against those keys would answer "did
+     * someone sign something" and read as a protection this transaction does not have.
+     */
+    @Test
+    public void a_signature_by_a_key_the_caller_does_not_vouch_for_is_not_counted() {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+
+        ECKey stranger = new ECKey();
+        psbtInput.setSigHash(SigHash.fromByte(unifiedAll));
+        psbtInput.sign(stranger);
+        Assertions.assertEquals(2, psbtInput.getPartialSignatures().size(), "the input must carry the stranger's signature");
+
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures(trusted());
+        Assertions.assertEquals(1, verified.size(), "only the key the caller vouches for counts");
+        Assertions.assertEquals(SigHash.ALL.byteValue(), verified.get(0).sighashFlags,
+                "the stranger's opted-in signature was counted");
     }
 
     /**
@@ -207,6 +235,6 @@ public class VerifiedSignaturesTest {
         PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
         psbtInput.setFinalScriptWitness(new TransactionWitness(null, List.of(junk((byte)0x21), junk((byte)0x21))));
 
-        Assertions.assertTrue(psbtInput.getVerifiedSignatures().isEmpty());
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(trusted()).isEmpty());
     }
 }
