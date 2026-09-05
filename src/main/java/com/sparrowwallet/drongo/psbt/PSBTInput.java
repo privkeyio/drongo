@@ -70,8 +70,12 @@ public class PSBTInput {
      * carried in PSBT_IN_TAP_LEAF_SCRIPT, which this does not parse, so these cannot be verified here: what they give
      * a caller is the fact that this input has been signed, which was otherwise unreadable and left an input carrying
      * only these looking exactly like an unsigned one.
+     *
+     * Held as hex, the way proprietary entries are, because nothing here interprets them and a combiner must hand back
+     * what it was given. Decoded and re-encoded they would not always survive: a 65 byte signature whose hash type
+     * byte is zero comes back 64 bytes long, since that byte encodes the type the encoder then omits.
      */
-    private final Map<String, TransactionSignature> tapScriptSignatures = new LinkedHashMap<>();
+    private final Map<String, String> tapScriptSignatures = new LinkedHashMap<>();
     private TransactionSignature tapKeyPathSignature;
     private Map<ECKey, Map<KeyDerivation, List<Sha256Hash>>> tapDerivedPublicKeys = new LinkedHashMap<>();
     private ECKey tapInternalKey;
@@ -378,11 +382,17 @@ public class PSBTInput {
                     log.debug("Found input taproot key path signature " + Utils.bytesToHex(entry.getData()));
                     break;
                 case PSBT_IN_TAP_SCRIPT_SIG:
-                    //One byte, then the x only public key and the leaf hash it signs under
-                    if(entry.getKey().length != 65) {
+                    //The key data, not the key length. A key type may be written as a longer compact size integer than
+                    //it needs, and this parser accepts that form and dispatches on the low byte, so the padding lands
+                    //in the key length: a check made there admits key data short by exactly the padding, and the entry
+                    //is then written back out in the one byte form that no longer matches it.
+                    if(entry.getKeyData() == null || entry.getKeyData().length != 64) {
                         throw new PSBTParseException("PSBT key type must be one byte plus x only pub key plus leaf hash");
                     }
-                    this.tapScriptSignatures.put(Utils.bytesToHex(entry.getKeyData()), TransactionSignature.decodeFromBitcoin(SCHNORR, entry.getData(), true));
+                    if(entry.getData().length != 64 && entry.getData().length != 65) {
+                        throw new PSBTParseException("PSBT taproot script path signature must be 64 or 65 bytes");
+                    }
+                    this.tapScriptSignatures.put(Utils.bytesToHex(entry.getKeyData()), Utils.bytesToHex(entry.getData()));
                     log.debug("Found input taproot script path signature " + Utils.bytesToHex(entry.getData()));
                     break;
                 case PSBT_IN_TAP_BIP32_DERIVATION:
@@ -567,8 +577,8 @@ public class PSBTInput {
             entries.add(populateEntry(PSBT_IN_TAP_KEY_SIG, null, tapKeyPathSignature.encodeToBitcoin()));
         }
 
-        for(Map.Entry<String, TransactionSignature> entry : tapScriptSignatures.entrySet()) {
-            entries.add(populateEntry(PSBT_IN_TAP_SCRIPT_SIG, Utils.hexToBytes(entry.getKey()), entry.getValue().encodeToBitcoin()));
+        for(Map.Entry<String, String> entry : tapScriptSignatures.entrySet()) {
+            entries.add(populateEntry(PSBT_IN_TAP_SCRIPT_SIG, Utils.hexToBytes(entry.getKey()), Utils.hexToBytes(entry.getValue())));
         }
 
         for(Map.Entry<ECKey, Map<KeyDerivation, List<Sha256Hash>>> entry : tapDerivedPublicKeys.entrySet()) {
@@ -708,7 +718,7 @@ public class PSBTInput {
         }
     }
 
-    public Map<String, TransactionSignature> getTapScriptSignatures() {
+    public Map<String, String> getTapScriptSignatures() {
         return Collections.unmodifiableMap(tapScriptSignatures);
     }
 

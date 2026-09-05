@@ -8,6 +8,7 @@ import com.sparrowwallet.drongo.protocol.Transaction;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -59,9 +60,9 @@ public class TapScriptSignatureTest {
 
         Assertions.assertEquals(1, psbtInput.getTapScriptSignatures().size(),
                 "an input carrying only these read as one nothing had signed");
-        Assertions.assertEquals(unifiedAll,
-                psbtInput.getTapScriptSignatures().get(X_ONLY_KEY + LEAF_HASH).sighashFlags,
-                "the hash type is the last byte, which is the byte the whole question turns on");
+        Assertions.assertEquals(Utils.bytesToHex(signature(unifiedAll)),
+                psbtInput.getTapScriptSignatures().get(X_ONLY_KEY + LEAF_HASH),
+                "kept exactly as given, since nothing here interprets it and a combiner hands back what it got");
     }
 
     /** And survives being written back out, so keeping it does not come at the cost of dropping it on the way out. */
@@ -102,5 +103,69 @@ public class TapScriptSignatureTest {
         psbtInput.clearNonFinalFields();
 
         Assertions.assertTrue(psbtInput.getTapScriptSignatures().isEmpty());
+    }
+
+    /**
+     * A key type written as a longer compact size integer than it needs is still read as this type, because the entry
+     * parser does not require the canonical form and the switch that dispatches on it takes the low byte. The padding
+     * lands in the key length, so a check on the whole key admits key data that is short by exactly the padding.
+     *
+     * Refused on the key data itself, which is the thing being asserted. Left on the key length it parsed, and was then
+     * written back out with the one byte form, and the PSBT this library produced could no longer be read by it.
+     */
+    @Test
+    public void a_key_type_padded_to_a_longer_compact_size_is_refused() {
+        byte[] keyData = new byte[62];
+        Arrays.fill(keyData, (byte)0x77);
+
+        ByteBuffer entry = ByteBuffer.allocate(1 + 65 + 1 + 65);
+        entry.put((byte)65);
+        entry.put(new byte[] {(byte)0xfd, 0x14, 0x01});
+        entry.put(keyData);
+        entry.put((byte)65);
+        entry.put(signature(SigHash.ALL.byteValue()));
+        entry.flip();
+
+        PSBTEntry parsed = Assertions.assertDoesNotThrow(() -> new PSBTEntry(entry));
+        Assertions.assertEquals(276, parsed.getKeyType(), "the padded form has to reach the type this test is about");
+        Assertions.assertEquals(65, parsed.getKey().length, "and has to pass a check made on the key length");
+
+        Assertions.assertThrows(PSBTParseException.class, () -> inputFrom(List.of(parsed)),
+                "62 bytes is not an x only public key and a leaf hash, whatever the key length says");
+    }
+
+    /**
+     * A signature whose last byte is zero keeps that byte. Decoded and re-encoded it would not: that byte is read as
+     * the hash type, zero is the default type, and the encoder omits the byte for it, so 65 bytes in came 64 bytes out
+     * and a combiner rewrote a signature another signer had made.
+     */
+    @Test
+    public void a_signature_ending_in_a_zero_byte_is_handed_back_unchanged() throws Exception {
+        byte[] signature = signature((byte)0x00);
+        PSBTInput psbtInput = inputFrom(List.of(tapScriptEntry(signature)));
+
+        Assertions.assertEquals(Utils.bytesToHex(signature),
+                psbtInput.getTapScriptSignatures().get(X_ONLY_KEY + LEAF_HASH));
+        for(PSBTEntry entry : psbtInput.getInputEntries(0)) {
+            if(entry.getKeyType() == PSBTInput.PSBT_IN_TAP_SCRIPT_SIG) {
+                Assertions.assertArrayEquals(signature, entry.getData(), "the trailing byte was dropped on the way out");
+            }
+        }
+    }
+
+    /**
+     * A value that is not a signature length at all is refused rather than stored, and refused as a PSBT parse
+     * failure. Handed to the Schnorr decoder it threw IllegalArgumentException instead, unchecked, out of a
+     * constructor that declares PSBTParseException, which is the escape the neighbouring cases are written to avoid.
+     */
+    @Test
+    public void a_signature_of_the_wrong_length_is_refused() {
+        for(int length : new int[] {0, 63, 66}) {
+            byte[] wrong = new byte[length];
+            Arrays.fill(wrong, (byte)0x33);
+
+            Assertions.assertThrows(PSBTParseException.class, () -> inputFrom(List.of(tapScriptEntry(wrong))),
+                    length + " bytes is not a signature");
+        }
     }
 }
