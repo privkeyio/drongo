@@ -4,6 +4,7 @@ import com.sparrowwallet.drongo.Utils;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.Script;
+import com.sparrowwallet.drongo.protocol.ScriptChunk;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.protocol.Sha256Hash;
 import com.sparrowwallet.drongo.protocol.SigHash;
@@ -253,6 +254,38 @@ public class VerifiedSignaturesTest {
         psbtInput.setFinalScriptWitness(new TransactionWitness(null, List.of(schnorrShaped)));
 
         Assertions.assertTrue(psbtInput.getVerifiedSignatures(List.of(ECKey.fromPublicOnly(outputKey))).isEmpty());
+    }
+
+    /**
+     * A script this cannot read leaves an answer, not an exception.
+     *
+     * A P2SH input whose redeem script was cleared by finalising, with a final scriptSig carrying nothing script
+     * shaped, has no script to unwrap and nothing to check against. A caller drawing a label from this has to get an
+     * empty answer: an exception here abandons whatever it was drawing and leaves what it said before standing.
+     */
+    @Test
+    public void a_script_that_cannot_be_read_answers_nothing() {
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        Script p2sh = ScriptType.P2SH.getOutputScript(ScriptType.P2WPKH.getOutputScript(PolicyType.SINGLE_HD, key()));
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(VALUE - 10_000, p2sh);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, VALUE, p2sh.getProgram()));
+
+        //A scriptSig of one signature shaped push: nothing in it is a script, so there is nothing to unwrap
+        List<ScriptChunk> chunks = new ArrayList<>();
+        chunks.add(new ScriptChunk(65, junk((byte)0x21)));
+        psbtInput.setFinalScriptSig(new Script(chunks));
+
+        Assertions.assertTrue(
+                Assertions.assertDoesNotThrow(() -> psbtInput.getVerifiedSignatures(List.of(ECKey.fromPublicOnly(outputKey))))
+                        .isEmpty(),
+                "a script that cannot be read answers with nothing rather than throwing");
     }
 
     /**
