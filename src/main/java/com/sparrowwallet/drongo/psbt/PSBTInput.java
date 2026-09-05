@@ -66,14 +66,9 @@ public class PSBTInput {
     /**
      * Taproot script path signatures, keyed by the x only public key and leaf hash they were made for.
      *
-     * Kept rather than dropped so that a reader can tell they are there. The leaf script that would check them is
-     * carried in PSBT_IN_TAP_LEAF_SCRIPT, which this does not parse, so these cannot be verified here: what they give
-     * a caller is the fact that this input has been signed, which was otherwise unreadable and left an input carrying
-     * only these looking exactly like an unsigned one.
-     *
-     * Held as hex, the way proprietary entries are, because nothing here interprets them and a combiner must hand back
-     * what it was given. Decoded and re-encoded they would not always survive: a 65 byte signature whose hash type
-     * byte is zero comes back 64 bytes long, since that byte encodes the type the encoder then omits.
+     * Not verifiable here, since PSBT_IN_TAP_LEAF_SCRIPT is not parsed: what they give a caller is that the input
+     * has been signed, which was otherwise unreadable. Held as hex like proprietary entries so a combiner hands back
+     * what it was given: re-encoded, a 65 byte signature whose hash type byte is zero comes back 64 bytes long.
      */
     private final Map<String, String> tapScriptSignatures = new LinkedHashMap<>();
     private TransactionSignature tapKeyPathSignature;
@@ -382,10 +377,8 @@ public class PSBTInput {
                     log.debug("Found input taproot key path signature " + Utils.bytesToHex(entry.getData()));
                     break;
                 case PSBT_IN_TAP_SCRIPT_SIG:
-                    //The key data, not the key length. A key type may be written as a longer compact size integer than
-                    //it needs, and this parser accepts that form and dispatches on the low byte, so the padding lands
-                    //in the key length: a check made there admits key data short by exactly the padding, and the entry
-                    //is then written back out in the one byte form that no longer matches it.
+                    //The key data, not the key length: a key type may use a longer compact size integer than it needs, and this
+                    //parser dispatches on the low byte, so the padding lands in the key length and hides short key data
                     if(entry.getKeyData() == null || entry.getKeyData().length != 64) {
                         throw new PSBTParseException("PSBT key type must be one byte plus x only pub key plus leaf hash");
                     }
