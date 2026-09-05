@@ -984,6 +984,18 @@ public class PSBTInput {
         }
     }
 
+    /**
+     * The point a key stands for, or null where those bytes are not one. ECKey.fromPublicOnly defers the decode, so a
+     * key that is not on the curve is only found out here.
+     */
+    private static ECPoint pointOf(ECKey key) {
+        try {
+            return key.getPubKeyPoint().normalize();
+        } catch(RuntimeException e) {
+            return null;
+        }
+    }
+
     /** As above, for an input whose signatures still name the keys that made them. */
     private List<TransactionSignature> verifiedPartialSignatures(Script signingScript, Collection<ECKey> trustedKeys) {
         Map<ECKey, TransactionSignature> partialSignatures = getPartialSignatures();
@@ -996,14 +1008,21 @@ public class PSBTInput {
         //is also what makes the two encodings of one key the same key.
         Set<ECPoint> trusted = new HashSet<>();
         for(ECKey trustedKey : trustedKeys) {
-            trusted.add(trustedKey.getPubKeyPoint().normalize());
+            ECPoint point = pointOf(trustedKey);
+            if(point != null) {
+                trusted.add(point);
+            }
         }
 
         List<TransactionSignature> verified = new ArrayList<>();
         Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
 
         for(Map.Entry<ECKey, TransactionSignature> entry : partialSignatures.entrySet()) {
-            if(!trusted.contains(entry.getKey().getPubKeyPoint().normalize())) {
+            //The key is the PSBT's, so reading its point is reading attacker supplied bytes: a 33 byte value that is
+            //not on the curve parses without complaint and only fails here. One of those must cost this entry and not
+            //the whole input, and never the label.
+            ECPoint named = pointOf(entry.getKey());
+            if(named == null || !trusted.contains(named)) {
                 continue;
             }
 

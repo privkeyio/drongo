@@ -392,4 +392,53 @@ public class VerifiedSignaturesTest {
         Assertions.assertTrue(psbtInput.getVerifiedSignatures(trusted()).isEmpty(),
                 "a signature over another transaction says nothing about this one");
     }
+
+    /**
+     * A public key in a PSBT is attacker supplied and is not checked when it is parsed: ECKey.fromPublicOnly wraps a
+     * lazy point, so a 33 byte value that is not on the curve is accepted and only throws when the point is first
+     * read. Verifying a partial signature against the key that names it reads that point, which is the one thing this
+     * method promises not to do: the caller is drawing a label, and an exception leaves whatever it said before.
+     *
+     * The old loop never touched a key from the PSBT at all, so this became reachable only by the change that made it
+     * check the named key.
+     */
+    @Test
+    public void a_public_key_that_is_not_on_the_curve_answers_nothing_rather_than_throwing() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        TransactionSignature real = psbtInput.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+
+        ECKey offCurve = ECKey.fromPublicOnly(Utils.hexToBytes("02" + "ff".repeat(32)));
+        psbtInput.getPartialSignatures().put(offCurve, real);
+
+        List<TransactionSignature> verified = Assertions.assertDoesNotThrow(
+                () -> psbtInput.getVerifiedSignatures(trusted()),
+                "a key that is not a point on the curve must not take the label with it");
+        Assertions.assertEquals(1, verified.size(),
+                "the real signature beside it still has to be found, not lost to the bad entry");
+    }
+
+    /**
+     * The caller's key and the key the PSBT names are the same key when they are the same point, whatever each carries
+     * around it. ECKey.equals compares the private field, so a caller vouching with a key it can sign with never
+     * matched the public one named in the input, and a swept key stopped being counted. The two encodings of one
+     * public key are the same point too.
+     */
+    @Test
+    public void a_key_is_matched_by_its_point_and_not_by_what_it_is_wrapped_in() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+
+        Assertions.assertEquals(1, psbtInput.getVerifiedSignatures(List.of(outputKey)).size(),
+                "a key carrying its private part is the same key as the public one the input names");
+
+        ECKey uncompressed = ECKey.fromPublicOnly(outputKey.getPubKeyPoint().getEncoded(false));
+        Assertions.assertEquals(65, uncompressed.getPubKey().length, "the fixture has to be the other encoding");
+        Assertions.assertEquals(1, psbtInput.getVerifiedSignatures(List.of(uncompressed)).size(),
+                "the two encodings of one public key are one key");
+
+        ECKey stranger = ECKey.fromPublicOnly(ECKey.fromPrivate(Utils.hexToBytes("44".repeat(32))).getPubKey());
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(List.of(stranger)).isEmpty(),
+                "and a different key is still a different key");
+    }
 }
