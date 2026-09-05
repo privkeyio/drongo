@@ -991,7 +991,12 @@ public class PSBTInput {
                 candidateKeys.add(outputKey);
             }
         }
-        candidateKeys.addAll(getScriptPublicKeys());
+        candidateKeys.addAll(getScriptPublicKeys(signingScript, utxo));
+        if(candidateKeys.isEmpty()) {
+            //Nothing to check against, so no message is worth building: each one streams every input and every spent
+            //output, and the answer is already known to be empty
+            return Collections.emptyList();
+        }
 
         Collection<TransactionSignature> signatures = getSignatures();
         //Checking every signature against every key is a product, and both sides are whatever the input carries, so a
@@ -1016,8 +1021,10 @@ public class PSBTInput {
                         verified.add(signature);
                         break;
                     }
-                } catch(Exception e) {
-                    //A key of the wrong kind for this signature verifies nothing, and says nothing about the others
+                } catch(IllegalArgumentException e) {
+                    //A candidate that is not a key of the kind this signature needs verifies nothing, and says nothing
+                    //about the others. Anything else, a missing native library among them, belongs to the caller: a
+                    //check that cannot run must not read as a check that failed
                 }
             }
         }
@@ -1026,35 +1033,29 @@ public class PSBTInput {
     }
 
     /**
-     * Every public key this input names anywhere a signature could be checked against: the two final scripts, and the
-     * redeem and witness scripts that say what those satisfy.
+     * Every public key this input names anywhere a signature could be checked against.
+     *
+     * The signing script is the first source and the one that matters after finalising, which clears the redeem and
+     * witness scripts and the partial signatures: a finalised multisig then names its keys only inside the script the
+     * final witness carries, and reading the input's own fields would find nothing at all. The spent output covers the
+     * scripts that name a key directly, the derivations cover what this wallet knows about the input and survive
+     * finalising, and the final scripts carry the key a single signature input pushes beside its signature.
      */
-    private Set<ECKey> getScriptPublicKeys() {
-        Set<ECKey> publicKeys = new LinkedHashSet<>();
-        List<ScriptChunk> chunks = new ArrayList<>();
+    private Set<ECKey> getScriptPublicKeys(Script signingScript, TransactionOutput utxo) {
+        Set<ECKey> publicKeys = new LinkedHashSet<>(getDerivedPublicKeys().keySet());
+
+        List<ScriptChunk> chunks = new ArrayList<>(signingScript.getChunks());
+        chunks.addAll(utxo.getScript().getChunks());
         if(getFinalScriptSig() != null) {
             chunks.addAll(getFinalScriptSig().getChunks());
         }
         if(getFinalScriptWitness() != null) {
             chunks.addAll(getFinalScriptWitness().asScriptChunks());
         }
-        if(getRedeemScript() != null) {
-            chunks.addAll(getRedeemScript().getChunks());
-        }
-        if(getWitnessScript() != null) {
-            chunks.addAll(getWitnessScript().getChunks());
-        }
 
         for(ScriptChunk chunk : chunks) {
             if(chunk.isPubKey()) {
                 publicKeys.add(chunk.getPubKey());
-            } else if(chunk.getData() != null && chunk.getData().length == 32) {
-                //An x only key, which is how a tapscript names one
-                try {
-                    publicKeys.add(ECKey.fromPublicOnly(Utils.concat(new byte[] {0x02}, chunk.getData())));
-                } catch(Exception e) {
-                    //Not a key
-                }
             }
         }
 

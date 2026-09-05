@@ -119,6 +119,56 @@ public class VerifiedSignaturesTest {
     }
 
     /**
+     * A finalised multisig, which is the shape that hides its keys.
+     *
+     * Finalising clears the witness script and the partial signatures, so the quorum's keys are left only inside the
+     * script the final witness carries. An input read through its own fields alone finds no key here, verifies nothing,
+     * and reports a fully opted-in quorum as carrying no protection at all.
+     */
+    @Test
+    public void a_finalised_multisig_still_finds_its_keys() {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        ECKey first = ECKey.fromPrivate(Utils.hexToBytes("11".repeat(32)));
+        ECKey second = ECKey.fromPrivate(Utils.hexToBytes("22".repeat(32)));
+        Script witnessScript = ScriptType.MULTISIG.getOutputScript(2, List.of(first, second));
+        Script spk = ScriptType.P2WSH.getOutputScript(witnessScript);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(VALUE - 10_000, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, VALUE, spk.getProgram()));
+        psbtInput.setWitnessScript(witnessScript);
+        psbtInput.setSigHash(SigHash.fromByte(unifiedAll));
+        psbtInput.sign(first);
+        psbtInput.sign(second);
+
+        TransactionSignature firstSignature = psbtInput.getPartialSignature(ECKey.fromPublicOnly(first));
+        TransactionSignature secondSignature = psbtInput.getPartialSignature(ECKey.fromPublicOnly(second));
+        Assertions.assertNotNull(firstSignature, "the fixture must be signed by both keys");
+        Assertions.assertNotNull(secondSignature, "the fixture must be signed by both keys");
+
+        List<byte[]> pushes = new ArrayList<>();
+        pushes.add(new byte[0]);
+        pushes.add(firstSignature.encodeToBitcoin());
+        pushes.add(secondSignature.encodeToBitcoin());
+        pushes.add(witnessScript.getProgram());
+
+        psbtInput.clearNonFinalFields();
+        psbtInput.setFinalScriptWitness(new TransactionWitness(null, pushes));
+        Assertions.assertNull(psbtInput.getWitnessScript(), "finalising must have cleared what this has to recover");
+
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures();
+        Assertions.assertEquals(2, verified.size(), "the quorum's signatures were not found once finalised");
+        for(TransactionSignature signature : verified) {
+            Assertions.assertEquals(unifiedAll, signature.sighashFlags);
+        }
+    }
+
+    /**
      * An input carrying more to check than any script could spend is not checked at all. The work is a product of the
      * signatures and the keys, both of which an input chooses, so it has a ceiling; answering nothing past it keeps the
      * promise that a caller must treat what is missing as absent.
