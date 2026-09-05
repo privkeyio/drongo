@@ -997,6 +997,18 @@ public class PSBTInput {
     }
 
     /**
+     * Whether this input's signatures still name the keys that made them, which is every input before it is finalised.
+     *
+     * A partial signature names its key, so there is no product to do: verify it against that key alone, once it is
+     * one the caller vouches for. The guarantee is unchanged, because the membership test is what the caller trusts
+     * and the file cannot forge it. An 11 of 15 input costs 11 checks instead of 165, which is the difference between
+     * checking a large multisig consolidation and giving up on it. A finalised input carries pushes with no names.
+     */
+    public boolean namesItsKeys() {
+        return getFinalScriptWitness() == null && getFinalScriptSig() == null && getTapKeyPathSignature() == null;
+    }
+
+    /**
      * As getVerifiedSignatures, keeping the key each signature verified under.
      *
      * A signature does not carry the key that made it, and TransactionSignature compares by hash type and by r and s,
@@ -1004,8 +1016,7 @@ public class PSBTInput {
      * the fact, and a caller choosing which signature goes in which slot needs the pair rather than the signature.
      */
     public Map<ECKey, TransactionSignature> getVerifiedPartialSignatures(Collection<ECKey> trustedKeys) {
-        if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null
-                || getFinalScriptWitness() != null || getFinalScriptSig() != null || getTapKeyPathSignature() != null) {
+        if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null || !namesItsKeys()) {
             return Collections.emptyMap();
         }
 
@@ -1110,6 +1121,10 @@ public class PSBTInput {
      * reporting a protection has to treat what is missing as absent.
      */
     public List<TransactionSignature> getVerifiedSignatures(Collection<ECKey> trustedKeys) {
+        if(namesItsKeys()) {
+            return new ArrayList<>(getVerifiedPartialSignatures(trustedKeys).values());
+        }
+
         //The spent output is what the message is built over, and getSigningScript reads it, so its absence is answered
         //here rather than thrown from there
         if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null) {
@@ -1128,15 +1143,6 @@ public class PSBTInput {
 
         if(signingScript == null) {
             return Collections.emptyList();
-        }
-
-        //A partial signature names the key that made it, so there is no product to do: verify it against that key
-        //alone, once it is one the caller vouches for. The guarantee is unchanged, because the membership test is what
-        //the caller trusts and the file cannot forge it. A stranger naming a key of their own fails that test; one
-        //naming a key of ours has to supply a signature that verifies under it. An 11 of 15 input costs 11 checks
-        //instead of 165, which is the difference between checking a large multisig consolidation and giving up on it.
-        if(getFinalScriptWitness() == null && getFinalScriptSig() == null && getTapKeyPathSignature() == null) {
-            return new ArrayList<>(verifiedPartialSignatures(signingScript, trustedKeys).values());
         }
 
         Collection<TransactionSignature> signatures = getSignatures();
