@@ -2030,16 +2030,25 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
      * the whole transaction. Only the values are cleared, so every key stays in the map for the script, and the order
      * of what is left is untouched, because CHECKMULTISIG requires signatures in the order of the keys.
      */
-    private static void retainThreshold(Map<ECKey, TransactionSignature> pubKeySignatures, int threshold) {
+    static void retainThreshold(Map<ECKey, TransactionSignature> pubKeySignatures, int threshold, PSBTInput psbtInput) {
         List<ECKey> present = pubKeySignatures.entrySet().stream().filter(entry -> entry.getValue() != null)
                 .map(Map.Entry::getKey).collect(Collectors.toList());
         if(present.size() <= threshold) {
             return;
         }
 
+        //Preferred only where the signature verifies. A partial signature and the key naming it both come out of the
+        //PSBT, so the opt-in bit on its own is a claim anyone who wrote the file can make, and preferring on the bit
+        //alone would put one that verifies nothing ahead of one that does, every time rather than by luck. Where
+        //nothing can be checked this finds none of them preferred and falls back to key order, which is what it did
+        //before any of this.
+        List<TransactionSignature> verified = psbtInput.getVerifiedSignatures(pubKeySignatures.keySet());
+
         List<ECKey> keep = new ArrayList<>();
         for(ECKey pubKey : present) {
-            if(keep.size() < threshold && (pubKeySignatures.get(pubKey).sighashFlags & SigHash.UNIFIED_FLAG) != 0) {
+            TransactionSignature signature = pubKeySignatures.get(pubKey);
+            if(keep.size() < threshold && (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0
+                    && verified.contains(signature)) {
                 keep.add(pubKey);
             }
         }
@@ -2111,7 +2120,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                         throw new IllegalArgumentException("Pubkeys of partial signatures do not match wallet pubkeys");
                     }
 
-                    retainThreshold(pubKeySignatures, threshold);
+                    retainThreshold(pubKeySignatures, threshold, psbtInput);
                     finalizedTxInput = signingWallet.getScriptType().addMultisigSpendingInput(signingWallet.getPolicyType(), transaction, utxo, threshold, pubKeySignatures);
                 } else {
                     throw new UnsupportedOperationException("Cannot finalise PSBT for policy type " + signingWallet.getPolicyType());
@@ -2161,7 +2170,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 return;
             }
 
-            retainThreshold(pubKeySignatures, inputThreshold);
+            retainThreshold(pubKeySignatures, inputThreshold, psbtInput);
             finalizedTxInput = inputScriptType.addMultisigSpendingInput(PolicyType.MULTI_HD, transaction, utxo, inputThreshold, pubKeySignatures);
         } else if(inputThreshold == 1) {
             ECKey pubKey;

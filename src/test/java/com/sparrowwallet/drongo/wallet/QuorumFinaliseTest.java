@@ -56,6 +56,7 @@ public class QuorumFinaliseTest {
         //Every script type a quorum can be spent by. Nulling an entry the map used to have a signature for is new
         //state for all of their scriptSig and witness builders, not only the one this was found on.
         for(ScriptType scriptType : new ScriptType[] {ScriptType.P2WSH, ScriptType.P2SH, ScriptType.P2SH_P2WSH}) {
+            //Bare multisig has no wallet script type of its own; its assembly path is reached through the others
             assertKeepsTheOptedInSignature(scriptType);
         }
     }
@@ -189,5 +190,108 @@ public class QuorumFinaliseTest {
         Assertions.assertEquals(2,
                 psbt.getPsbtInputs().get(0).getFinalScriptWitness().getSignatures().size(),
                 "nothing was spare, so nothing may have been dropped");
+    }
+
+    /**
+     * The kept signatures stay in the order of the keys, which is what CHECKMULTISIG requires and the whole reason
+     * this may only choose which to keep and never reorder. Proven to spend for every script type against a node in
+     * spare_quorum_finalise.py; asserted here so a regression is caught without one.
+     */
+    @Test
+    public void what_it_keeps_stays_in_the_order_of_the_keys() throws Exception {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        Wallet wallet = wallet(ScriptType.P2WSH);
+        WalletNode node = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = wallet.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(90_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        psbtInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+
+        //Only the middle key opts in, so the choice has to reach past the first and stop before the last
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        ECKey middle = ordered.get(1);
+        for(Keystore keystore : wallet.getKeystores()) {
+            psbtInput.setSigHash(keystore.getPubKey(node).equals(middle) ? SigHash.fromByte(unifiedAll) : SigHash.ALL);
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+
+        //What the signatures would be in key order, which the kept ones have to be a run of
+        List<TransactionSignature> inKeyOrder = new ArrayList<>();
+        for(ECKey pubKey : ordered) {
+            inKeyOrder.add(psbtInput.getPartialSignature(pubKey));
+        }
+
+        wallet.finalise(psbt);
+        List<TransactionSignature> kept = new ArrayList<>(
+                psbt.getPsbtInputs().get(0).getFinalScriptWitness().getSignatures());
+
+        int at = 0;
+        for(TransactionSignature signature : kept) {
+            while(at < inKeyOrder.size() && !inKeyOrder.get(at).equals(signature)) {
+                at++;
+            }
+            Assertions.assertTrue(at < inKeyOrder.size(),
+                    "the kept signatures are not in the order of the keys, so this will not spend");
+            at++;
+        }
+        Assertions.assertTrue(kept.stream().anyMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
+                "and the one that opts in is still among them");
+    }
+
+    /**
+     * A signature that claims the opt-in and verifies nothing must not take a slot from one that verifies.
+     *
+     * The bit and the key naming it are both written by whoever wrote the PSBT. Preferring on the bit alone made a
+     * signature that verifies nothing win a place deterministically, where key order gave it one only by luck, and
+     * the transaction that comes out of that does not spend at all.
+     */
+    @Test
+    public void a_signature_claiming_the_opt_in_that_verifies_nothing_is_not_preferred() throws Exception {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        Wallet wallet = wallet(ScriptType.P2WSH);
+        WalletNode node = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = wallet.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(90_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        psbtInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+        psbtInput.setSigHash(SigHash.ALL);
+
+        for(Keystore keystore : wallet.getKeystores()) {
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+
+        //The one that sorts last, replaced with a mangled copy that claims the opt-in and verifies nothing
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        ECKey last = ordered.get(ordered.size() - 1);
+        TransactionSignature real = psbtInput.getPartialSignature(last);
+        byte[] mangled = real.encodeToBitcoin();
+        mangled[10] ^= 0x01;
+        mangled[mangled.length - 1] = unifiedAll;
+        psbtInput.getPartialSignatures().put(last,
+                TransactionSignature.decodeFromBitcoin(TransactionSignature.Type.ECDSA, mangled, false));
+
+        wallet.finalise(psbt);
+        List<TransactionSignature> kept = new ArrayList<>(
+                psbt.getPsbtInputs().get(0).getFinalScriptWitness().getSignatures());
+
+        Assertions.assertEquals(2, kept.size(), "a 2 of 3 keeps two");
+        Assertions.assertTrue(kept.stream().noneMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
+                "the only signature claiming the opt-in verifies nothing, so it may not have taken a slot");
     }
 }
