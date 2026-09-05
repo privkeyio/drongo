@@ -294,4 +294,42 @@ public class QuorumFinaliseTest {
         Assertions.assertTrue(kept.stream().noneMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
                 "the only signature claiming the opt-in verifies nothing, so it may not have taken a slot");
     }
+
+    /**
+     * With nothing to prefer this has to leave the old answer exactly as it was, since every multisig wallet that has
+     * never heard of the opt-in goes through it. The two kept are the two whose keys sort first, which is what taking
+     * them in key order and stopping at the threshold did.
+     */
+    @Test
+    public void a_quorum_where_nothing_opts_in_keeps_what_key_order_kept() throws Exception {
+        Wallet wallet = wallet(ScriptType.P2WSH);
+        WalletNode node = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = wallet.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(90_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        psbtInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+        psbtInput.setSigHash(SigHash.ALL);
+
+        for(Keystore keystore : wallet.getKeystores()) {
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        List<TransactionSignature> expected = List.of(
+                psbtInput.getPartialSignature(ordered.get(0)), psbtInput.getPartialSignature(ordered.get(1)));
+
+        wallet.finalise(psbt);
+
+        Assertions.assertEquals(expected, new ArrayList<>(
+                psbt.getPsbtInputs().get(0).getFinalScriptWitness().getSignatures()),
+                "nothing opts in, so this has to keep exactly what key order kept");
+    }
 }
