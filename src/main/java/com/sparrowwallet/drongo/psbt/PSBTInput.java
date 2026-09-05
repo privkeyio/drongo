@@ -1313,6 +1313,21 @@ public class PSBTInput {
         }
     }
 
+    /**
+     * Whether this key verifies this signature, taking a key that is not a point on the curve as a failure.
+     *
+     * Both keys here come out of the PSBT and are not checked when it is parsed, so decoding one throws
+     * IllegalArgumentException from a method that declares PSBTSignatureException. Callers catch what is declared, so
+     * it left the open flow uncaught on a file anyone could write.
+     */
+    private static boolean verifies(ECKey key, Sha256Hash hash, TransactionSignature signature) {
+        try {
+            return key.verify(hash, signature);
+        } catch(IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     boolean verifySignatures() throws PSBTSignatureException {
         if(getNonWitnessUtxo() != null || getWitnessUtxo() != null) {
             Script signingScript = getSigningScript();
@@ -1330,7 +1345,7 @@ public class PSBTInput {
                     requireRequestedType(declared, tapKeyPathSignature.sighashFlags);
                     Sha256Hash hash = sigHashes.computeIfAbsent(tapKeyPathSignature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
                     requireDigest(hash, tapKeyPathSignature.sighashFlags);
-                    if(!outputKey.verify(hash, tapKeyPathSignature)) {
+                    if(!verifies(outputKey, hash, tapKeyPathSignature)) {
                         throw new PSBTSignatureException("Tweaked internal key does not verify against provided taproot keypath signature");
                     }
                 } else {
@@ -1339,7 +1354,7 @@ public class PSBTInput {
                         requireRequestedType(declared, signature.sighashFlags);
                         Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
                         requireDigest(hash, signature.sighashFlags);
-                        if(!sigPublicKey.verify(hash, signature)) {
+                        if(!verifies(sigPublicKey, hash, signature)) {
                             throw new PSBTSignatureException("Partial signature does not verify against provided public key");
                         }
                     }

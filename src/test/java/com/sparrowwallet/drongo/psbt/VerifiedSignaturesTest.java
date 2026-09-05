@@ -441,4 +441,22 @@ public class VerifiedSignaturesTest {
         Assertions.assertTrue(psbtInput.getVerifiedSignatures(List.of(stranger)).isEmpty(),
                 "and a different key is still a different key");
     }
+
+    /**
+     * And the same key on the path a PSBT takes when it is opened. verifySignatures declares PSBTSignatureException
+     * and the caller catches that alone, so an IllegalArgumentException from decoding a key the PSBT names left the
+     * open flow uncaught. Pre-existing, and reachable from any file, paste or scan.
+     */
+    @Test
+    public void opening_a_psbt_naming_a_key_that_is_not_on_the_curve_is_refused_not_crashed() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        TransactionSignature real = psbtInput.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+
+        psbtInput.getPartialSignatures().clear();
+        psbtInput.getPartialSignatures().put(ECKey.fromPublicOnly(Utils.hexToBytes("02" + "ff".repeat(32))), real);
+
+        Assertions.assertThrows(PSBTSignatureException.class, psbtInput::verifySignatures,
+                "a key that is not a point on the curve is an invalid PSBT, not an escaping runtime exception");
+    }
 }
