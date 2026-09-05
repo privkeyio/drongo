@@ -38,6 +38,7 @@ public class PSBTInput {
     public static final byte PSBT_IN_REQUIRED_TIME_LOCKTIME = 0x11;
     public static final byte PSBT_IN_REQUIRED_HEIGHT_LOCKTIME = 0x12;
     public static final byte PSBT_IN_TAP_KEY_SIG = 0x13;
+    public static final byte PSBT_IN_TAP_SCRIPT_SIG = 0x14;
     public static final byte PSBT_IN_TAP_BIP32_DERIVATION = 0x16;
     public static final byte PSBT_IN_TAP_INTERNAL_KEY = 0x17;
     public static final byte PSBT_IN_SP_ECDH_SHARE = 0x1d;
@@ -62,6 +63,15 @@ public class PSBTInput {
     private byte[] hash160Preimage;
     private byte[] hash256Preimage;
     private final Map<String, String> proprietary = new LinkedHashMap<>();
+    /**
+     * Taproot script path signatures, keyed by the x only public key and leaf hash they were made for.
+     *
+     * Kept rather than dropped so that a reader can tell they are there. The leaf script that would check them is
+     * carried in PSBT_IN_TAP_LEAF_SCRIPT, which this does not parse, so these cannot be verified here: what they give
+     * a caller is the fact that this input has been signed, which was otherwise unreadable and left an input carrying
+     * only these looking exactly like an unsigned one.
+     */
+    private final Map<String, TransactionSignature> tapScriptSignatures = new LinkedHashMap<>();
     private TransactionSignature tapKeyPathSignature;
     private Map<ECKey, Map<KeyDerivation, List<Sha256Hash>>> tapDerivedPublicKeys = new LinkedHashMap<>();
     private ECKey tapInternalKey;
@@ -367,6 +377,14 @@ public class PSBTInput {
                     this.tapKeyPathSignature = TransactionSignature.decodeFromBitcoin(SCHNORR, entry.getData(), true);
                     log.debug("Found input taproot key path signature " + Utils.bytesToHex(entry.getData()));
                     break;
+                case PSBT_IN_TAP_SCRIPT_SIG:
+                    //One byte, then the x only public key and the leaf hash it signs under
+                    if(entry.getKey().length != 65) {
+                        throw new PSBTParseException("PSBT key type must be one byte plus x only pub key plus leaf hash");
+                    }
+                    this.tapScriptSignatures.put(Utils.bytesToHex(entry.getKeyData()), TransactionSignature.decodeFromBitcoin(SCHNORR, entry.getData(), true));
+                    log.debug("Found input taproot script path signature " + Utils.bytesToHex(entry.getData()));
+                    break;
                 case PSBT_IN_TAP_BIP32_DERIVATION:
                     entry.checkOneBytePlusXOnlyPubKey();
                     ECKey tapPublicKey = ECKey.fromPublicOnly(entry.getKeyData());
@@ -549,6 +567,10 @@ public class PSBTInput {
             entries.add(populateEntry(PSBT_IN_TAP_KEY_SIG, null, tapKeyPathSignature.encodeToBitcoin()));
         }
 
+        for(Map.Entry<String, TransactionSignature> entry : tapScriptSignatures.entrySet()) {
+            entries.add(populateEntry(PSBT_IN_TAP_SCRIPT_SIG, Utils.hexToBytes(entry.getKey()), entry.getValue().encodeToBitcoin()));
+        }
+
         for(Map.Entry<ECKey, Map<KeyDerivation, List<Sha256Hash>>> entry : tapDerivedPublicKeys.entrySet()) {
             if(!entry.getValue().isEmpty()) {
                 entries.add(populateEntry(PSBT_IN_TAP_BIP32_DERIVATION, entry.getKey().getPubKeyXCoord(), serializeTaprootKeyDerivation(Collections.emptyList(), entry.getValue().keySet().iterator().next())));
@@ -677,11 +699,17 @@ public class PSBTInput {
             tapKeyPathSignature = psbtInput.tapKeyPathSignature;
         }
 
+        tapScriptSignatures.putAll(psbtInput.tapScriptSignatures);
+
         tapDerivedPublicKeys.putAll(psbtInput.tapDerivedPublicKeys);
 
         if(psbtInput.tapInternalKey != null) {
             tapInternalKey = psbtInput.tapInternalKey;
         }
+    }
+
+    public Map<String, TransactionSignature> getTapScriptSignatures() {
+        return Collections.unmodifiableMap(tapScriptSignatures);
     }
 
     public Transaction getNonWitnessUtxo() {
@@ -1362,6 +1390,7 @@ public class PSBTInput {
         proprietary.clear();
         tapDerivedPublicKeys.clear();
         tapKeyPathSignature = null;
+        tapScriptSignatures.clear();
         silentPaymentsEcdhShares.clear();
         silentPaymentsDLEQProofs.clear();
         silentPaymentsSpendDerivations.clear();
