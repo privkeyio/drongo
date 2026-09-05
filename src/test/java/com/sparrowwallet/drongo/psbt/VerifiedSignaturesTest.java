@@ -4,7 +4,6 @@ import com.sparrowwallet.drongo.Utils;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.Script;
-import com.sparrowwallet.drongo.protocol.ScriptChunk;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.protocol.Sha256Hash;
 import com.sparrowwallet.drongo.protocol.SigHash;
@@ -178,14 +177,14 @@ public class VerifiedSignaturesTest {
     }
 
     /**
-     * A finalised multisig, which is the shape that hides its keys.
+     * A finalised multisig, whose message has to be rebuilt from what the final witness carries.
      *
-     * Finalising clears the witness script and the partial signatures, so the quorum's keys are left only inside the
-     * script the final witness carries. An input read through its own fields alone finds no key here, verifies nothing,
-     * and reports a fully opted-in quorum as carrying no protection at all.
+     * Finalising clears the witness script and the partial signatures, so the script the signatures were made over is
+     * left only inside the witness. Without recovering it there is no message to check against and a fully opted-in
+     * quorum reports as carrying no protection at all.
      */
     @Test
-    public void a_finalised_multisig_still_finds_its_keys() {
+    public void a_finalised_multisig_still_builds_its_message() {
         byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
         ECKey first = ECKey.fromPrivate(Utils.hexToBytes("11".repeat(32)));
         ECKey second = ECKey.fromPrivate(Utils.hexToBytes("22".repeat(32)));
@@ -226,6 +225,34 @@ public class VerifiedSignaturesTest {
         for(TransactionSignature signature : verified) {
             Assertions.assertEquals(unifiedAll, signature.sighashFlags);
         }
+    }
+
+    /**
+     * A message that cannot be built leaves as an empty answer, not as an exception.
+     *
+     * A taproot message commits to every spent output in the transaction, so one input that carries none is enough to
+     * refuse it, and the caller here is drawing a label rather than signing.
+     */
+    @Test
+    public void an_input_whose_message_cannot_be_built_answers_nothing() {
+        ECKey outputKey = ScriptType.P2TR.getOutputKey(PolicyType.SINGLE_HD, key());
+        Script spk = ScriptType.P2TR.getOutputScript(PolicyType.SINGLE_HD, key());
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addInput(Sha256Hash.ZERO_HASH, 1, new Script(new byte[0]));
+        transaction.addOutput(VALUE - 10_000, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, VALUE, spk.getProgram()));
+        //The second input carries no spent output, so the taproot message for the first cannot be built
+        byte[] schnorrShaped = new byte[64];
+        Arrays.fill(schnorrShaped, (byte)0x11);
+        psbtInput.setFinalScriptWitness(new TransactionWitness(null, List.of(schnorrShaped)));
+
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(List.of(ECKey.fromPublicOnly(outputKey))).isEmpty());
     }
 
     /**

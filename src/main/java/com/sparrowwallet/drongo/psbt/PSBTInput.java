@@ -1001,7 +1001,21 @@ public class PSBTInput {
         List<TransactionSignature> verified = new ArrayList<>();
         Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
         for(TransactionSignature signature : signatures) {
-            Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
+            //Remembered even when it is null, so a hash type that names no message is worked out once rather than for
+            //every signature carrying it: building one streams every input and every spent output
+            if(!sigHashes.containsKey(signature.sighashFlags)) {
+                Sha256Hash computed = null;
+                try {
+                    computed = getHashForSignature(signingScript, signature.sighashFlags);
+                } catch(IllegalArgumentException e) {
+                    //A message that cannot be built is one that cannot be checked, which is the answer this gives
+                    //anyway. It must not leave by way of an exception: a PSBT where another input carries no spent
+                    //output is enough to reach this, and the caller is drawing a label rather than signing.
+                }
+                sigHashes.put(signature.sighashFlags, computed);
+            }
+
+            Sha256Hash hash = sigHashes.get(signature.sighashFlags);
             if(hash == null) {
                 continue;
             }
