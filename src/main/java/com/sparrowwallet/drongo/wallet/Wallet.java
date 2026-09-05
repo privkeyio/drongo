@@ -2021,6 +2021,41 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         return results;
     }
 
+    /**
+     * Drops the signatures a quorum has no room for, keeping the ones that opt in.
+     *
+     * More signers than the threshold needs leaves a choice, and taking them in key order made it by accident: a 2 of
+     * 3 whose marked device signs last kept the two that do not opt in, and the transaction went out carrying no
+     * replay protection having had it. The signature that opts in is the one worth keeping, since one of them protects
+     * the whole transaction. Only the values are cleared, so every key stays in the map for the script, and the order
+     * of what is left is untouched, because CHECKMULTISIG requires signatures in the order of the keys.
+     */
+    private static void retainThreshold(Map<ECKey, TransactionSignature> pubKeySignatures, int threshold) {
+        List<ECKey> present = pubKeySignatures.entrySet().stream().filter(entry -> entry.getValue() != null)
+                .map(Map.Entry::getKey).collect(Collectors.toList());
+        if(present.size() <= threshold) {
+            return;
+        }
+
+        List<ECKey> keep = new ArrayList<>();
+        for(ECKey pubKey : present) {
+            if(keep.size() < threshold && (pubKeySignatures.get(pubKey).sighashFlags & SigHash.UNIFIED_FLAG) != 0) {
+                keep.add(pubKey);
+            }
+        }
+        for(ECKey pubKey : present) {
+            if(keep.size() < threshold && !keep.contains(pubKey)) {
+                keep.add(pubKey);
+            }
+        }
+
+        for(ECKey pubKey : present) {
+            if(!keep.contains(pubKey)) {
+                pubKeySignatures.put(pubKey, null);
+            }
+        }
+    }
+
     public void finalise(PSBT psbt) {
         int threshold = getDefaultPolicy().getNumSignaturesRequired();
         Map<PSBTInput, WalletNode> signingNodes = getSigningNodes(psbt);
@@ -2076,6 +2111,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                         throw new IllegalArgumentException("Pubkeys of partial signatures do not match wallet pubkeys");
                     }
 
+                    retainThreshold(pubKeySignatures, threshold);
                     finalizedTxInput = signingWallet.getScriptType().addMultisigSpendingInput(signingWallet.getPolicyType(), transaction, utxo, threshold, pubKeySignatures);
                 } else {
                     throw new UnsupportedOperationException("Cannot finalise PSBT for policy type " + signingWallet.getPolicyType());
@@ -2125,6 +2161,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 return;
             }
 
+            retainThreshold(pubKeySignatures, inputThreshold);
             finalizedTxInput = inputScriptType.addMultisigSpendingInput(PolicyType.MULTI_HD, transaction, utxo, inputThreshold, pubKeySignatures);
         } else if(inputThreshold == 1) {
             ECKey pubKey;
