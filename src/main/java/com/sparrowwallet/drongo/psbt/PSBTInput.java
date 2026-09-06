@@ -10,6 +10,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import org.bouncycastle.math.ec.ECPoint;
+
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -38,6 +40,7 @@ public class PSBTInput {
     public static final byte PSBT_IN_REQUIRED_TIME_LOCKTIME = 0x11;
     public static final byte PSBT_IN_REQUIRED_HEIGHT_LOCKTIME = 0x12;
     public static final byte PSBT_IN_TAP_KEY_SIG = 0x13;
+    public static final byte PSBT_IN_TAP_SCRIPT_SIG = 0x14;
     public static final byte PSBT_IN_TAP_BIP32_DERIVATION = 0x16;
     public static final byte PSBT_IN_TAP_INTERNAL_KEY = 0x17;
     public static final byte PSBT_IN_SP_ECDH_SHARE = 0x1d;
@@ -62,6 +65,14 @@ public class PSBTInput {
     private byte[] hash160Preimage;
     private byte[] hash256Preimage;
     private final Map<String, String> proprietary = new LinkedHashMap<>();
+    /**
+     * Taproot script path signatures, keyed by the x only public key and leaf hash they were made for.
+     *
+     * Not verifiable here, since PSBT_IN_TAP_LEAF_SCRIPT is not parsed: what they give a caller is that the input
+     * has been signed, which was otherwise unreadable. Held as hex like proprietary entries so a combiner hands back
+     * what it was given: re-encoded, a 65 byte signature whose hash type byte is zero comes back 64 bytes long.
+     */
+    private final Map<String, String> tapScriptSignatures = new LinkedHashMap<>();
     private TransactionSignature tapKeyPathSignature;
     private Map<ECKey, Map<KeyDerivation, List<Sha256Hash>>> tapDerivedPublicKeys = new LinkedHashMap<>();
     private ECKey tapInternalKey;
@@ -367,6 +378,18 @@ public class PSBTInput {
                     this.tapKeyPathSignature = TransactionSignature.decodeFromBitcoin(SCHNORR, entry.getData(), true);
                     log.debug("Found input taproot key path signature " + Utils.bytesToHex(entry.getData()));
                     break;
+                case PSBT_IN_TAP_SCRIPT_SIG:
+                    //The key data, not the key length: a key type may use a longer compact size integer than it needs, and this
+                    //parser dispatches on the low byte, so the padding lands in the key length and hides short key data
+                    if(entry.getKeyData() == null || entry.getKeyData().length != 64) {
+                        throw new PSBTParseException("PSBT key type must be one byte plus x only pub key plus leaf hash");
+                    }
+                    if(entry.getData().length != 64 && entry.getData().length != 65) {
+                        throw new PSBTParseException("PSBT taproot script path signature must be 64 or 65 bytes");
+                    }
+                    this.tapScriptSignatures.put(Utils.bytesToHex(entry.getKeyData()), Utils.bytesToHex(entry.getData()));
+                    log.debug("Found input taproot script path signature " + Utils.bytesToHex(entry.getData()));
+                    break;
                 case PSBT_IN_TAP_BIP32_DERIVATION:
                     entry.checkOneBytePlusXOnlyPubKey();
                     ECKey tapPublicKey = ECKey.fromPublicOnly(entry.getKeyData());
@@ -549,6 +572,10 @@ public class PSBTInput {
             entries.add(populateEntry(PSBT_IN_TAP_KEY_SIG, null, tapKeyPathSignature.encodeToBitcoin()));
         }
 
+        for(Map.Entry<String, String> entry : tapScriptSignatures.entrySet()) {
+            entries.add(populateEntry(PSBT_IN_TAP_SCRIPT_SIG, Utils.hexToBytes(entry.getKey()), Utils.hexToBytes(entry.getValue())));
+        }
+
         for(Map.Entry<ECKey, Map<KeyDerivation, List<Sha256Hash>>> entry : tapDerivedPublicKeys.entrySet()) {
             if(!entry.getValue().isEmpty()) {
                 entries.add(populateEntry(PSBT_IN_TAP_BIP32_DERIVATION, entry.getKey().getPubKeyXCoord(), serializeTaprootKeyDerivation(Collections.emptyList(), entry.getValue().keySet().iterator().next())));
@@ -677,11 +704,17 @@ public class PSBTInput {
             tapKeyPathSignature = psbtInput.tapKeyPathSignature;
         }
 
+        tapScriptSignatures.putAll(psbtInput.tapScriptSignatures);
+
         tapDerivedPublicKeys.putAll(psbtInput.tapDerivedPublicKeys);
 
         if(psbtInput.tapInternalKey != null) {
             tapInternalKey = psbtInput.tapInternalKey;
         }
+    }
+
+    public Map<String, String> getTapScriptSignatures() {
+        return Collections.unmodifiableMap(tapScriptSignatures);
     }
 
     public Transaction getNonWitnessUtxo() {
@@ -952,6 +985,110 @@ public class PSBTInput {
     }
 
     /**
+     * The point a key stands for, or null where those bytes are not one. ECKey.fromPublicOnly defers the decode, so a
+     * key that is not on the curve is only found out here.
+     */
+    private static ECPoint pointOf(ECKey key) {
+        try {
+            return key.getPubKeyPoint().normalize();
+        } catch(RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether this input's signatures still name the keys that made them, which is every input before it is finalised.
+     *
+     * A partial signature names its key, so there is no product to do: verify it against that key alone, once it is
+     * one the caller vouches for. The guarantee is unchanged, because the membership test is what the caller trusts
+     * and the file cannot forge it. An 11 of 15 input costs 11 checks instead of 165, which is the difference between
+     * checking a large multisig consolidation and giving up on it. A finalised input carries pushes with no names.
+     */
+    public boolean namesItsKeys() {
+        return getFinalScriptWitness() == null && getFinalScriptSig() == null && getTapKeyPathSignature() == null;
+    }
+
+    /**
+     * As getVerifiedSignatures, keeping the key each signature verified under.
+     *
+     * A signature does not carry the key that made it, and TransactionSignature compares by hash type and by r and s,
+     * so a caller pairing the two by value pairs a signature with any key that files a copy of it. Only the pair is
+     * the fact, and a caller choosing which signature goes in which slot needs the pair rather than the signature.
+     */
+    public Map<ECKey, TransactionSignature> getVerifiedPartialSignatures(Collection<ECKey> trustedKeys) {
+        if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null || !namesItsKeys()) {
+            return Collections.emptyMap();
+        }
+
+        Script signingScript;
+        try {
+            signingScript = getSigningScript();
+        } catch(RuntimeException e) {
+            return Collections.emptyMap();
+        }
+
+        return signingScript == null ? Collections.emptyMap() : verifiedPartialSignatures(signingScript, trustedKeys);
+    }
+
+    /** As above, for an input whose signatures still name the keys that made them. */
+    private Map<ECKey, TransactionSignature> verifiedPartialSignatures(Script signingScript, Collection<ECKey> trustedKeys) {
+        Map<ECKey, TransactionSignature> partialSignatures = getPartialSignatures();
+        if(partialSignatures.size() > MAX_SIGNATURE_CHECKS) {
+            return Collections.emptyMap();
+        }
+
+        //By the point, not by the key. ECKey.equals compares the private part too, so a key the caller vouches for
+        //publicly never matches the same key carrying a private one, and a swept key stopped being counted. The point
+        //is also what makes the two encodings of one key the same key.
+        Set<ECPoint> trusted = new HashSet<>();
+        for(ECKey trustedKey : trustedKeys) {
+            ECPoint point = pointOf(trustedKey);
+            if(point != null) {
+                trusted.add(point);
+            }
+        }
+
+        Map<ECKey, TransactionSignature> verified = new LinkedHashMap<>();
+        Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
+
+        for(Map.Entry<ECKey, TransactionSignature> entry : partialSignatures.entrySet()) {
+            //The key is the PSBT's, so reading its point is reading attacker supplied bytes: a 33 byte value that is
+            //not on the curve parses without complaint and only fails here. One of those must cost this entry and not
+            //the whole input, and never the label.
+            ECPoint named = pointOf(entry.getKey());
+            if(named == null || !trusted.contains(named)) {
+                continue;
+            }
+
+            TransactionSignature signature = entry.getValue();
+            if(!sigHashes.containsKey(signature.sighashFlags)) {
+                Sha256Hash computed = null;
+                try {
+                    computed = getHashForSignature(signingScript, signature.sighashFlags);
+                } catch(RuntimeException e) {
+                    //As above: a message that cannot be built is one that cannot be checked
+                }
+                sigHashes.put(signature.sighashFlags, computed);
+            }
+
+            Sha256Hash hash = sigHashes.get(signature.sighashFlags);
+            if(hash == null) {
+                continue;
+            }
+
+            try {
+                if(entry.getKey().verify(hash, signature)) {
+                    verified.put(entry.getKey(), signature);
+                }
+            } catch(IllegalArgumentException e) {
+                //A key of the wrong kind for this signature verifies nothing, and says nothing about the others
+            }
+        }
+
+        return verified;
+    }
+
+    /**
      * The most signature checks worth making for one input, comfortably past the twenty keys consensus will check in a
      * multisig and far short of what a hostile input can ask for.
      */
@@ -972,6 +1109,11 @@ public class PSBTInput {
      * arrange for any hash type they like. Checking against keys the caller already trusts, its own wallet's, answers
      * whether one of those keys signed, which is the question a claim about this transaction rests on.
      *
+     * An input still carrying partial signatures is answered from those, and there each signature is checked against
+     * the key naming it rather than against every key given: the name has to be one of them and the signature still
+     * has to verify under it. So one filed under a key that did not make it is not found, where reading a finalised
+     * input's pushes has no name to go on and checks them all. getVerifiedPartialSignatures keeps those pairs.
+     *
      * It answers with less than is present, never more, and it does not throw. An input with no spent output has no
      * message to build, a hash type that names no message cannot be checked, a script that cannot be read leaves
      * nothing to check against, a tapscript path names a key this cannot recover, and an input asking for more checks
@@ -979,6 +1121,10 @@ public class PSBTInput {
      * reporting a protection has to treat what is missing as absent.
      */
     public List<TransactionSignature> getVerifiedSignatures(Collection<ECKey> trustedKeys) {
+        if(namesItsKeys()) {
+            return new ArrayList<>(getVerifiedPartialSignatures(trustedKeys).values());
+        }
+
         //The spent output is what the message is built over, and getSigningScript reads it, so its absence is answered
         //here rather than thrown from there
         if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null) {
@@ -1201,6 +1347,21 @@ public class PSBTInput {
         }
     }
 
+    /**
+     * Whether this key verifies this signature, taking a key that is not a point on the curve as a failure.
+     *
+     * Both keys here come out of the PSBT and are not checked when it is parsed, so decoding one throws
+     * IllegalArgumentException from a method that declares PSBTSignatureException. Callers catch what is declared, so
+     * it left the open flow uncaught on a file anyone could write.
+     */
+    private static boolean verifies(ECKey key, Sha256Hash hash, TransactionSignature signature) {
+        try {
+            return key.verify(hash, signature);
+        } catch(IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     boolean verifySignatures() throws PSBTSignatureException {
         if(getNonWitnessUtxo() != null || getWitnessUtxo() != null) {
             Script signingScript = getSigningScript();
@@ -1218,7 +1379,7 @@ public class PSBTInput {
                     requireRequestedType(declared, tapKeyPathSignature.sighashFlags);
                     Sha256Hash hash = sigHashes.computeIfAbsent(tapKeyPathSignature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
                     requireDigest(hash, tapKeyPathSignature.sighashFlags);
-                    if(!outputKey.verify(hash, tapKeyPathSignature)) {
+                    if(!verifies(outputKey, hash, tapKeyPathSignature)) {
                         throw new PSBTSignatureException("Tweaked internal key does not verify against provided taproot keypath signature");
                     }
                 } else {
@@ -1227,7 +1388,7 @@ public class PSBTInput {
                         requireRequestedType(declared, signature.sighashFlags);
                         Sha256Hash hash = sigHashes.computeIfAbsent(signature.sighashFlags, sigHashType -> getHashForSignature(signingScript, sigHashType));
                         requireDigest(hash, signature.sighashFlags);
-                        if(!sigPublicKey.verify(hash, signature)) {
+                        if(!verifies(sigPublicKey, hash, signature)) {
                             throw new PSBTSignatureException("Partial signature does not verify against provided public key");
                         }
                     }
@@ -1362,6 +1523,7 @@ public class PSBTInput {
         proprietary.clear();
         tapDerivedPublicKeys.clear();
         tapKeyPathSignature = null;
+        tapScriptSignatures.clear();
         silentPaymentsEcdhShares.clear();
         silentPaymentsDLEQProofs.clear();
         silentPaymentsSpendDerivations.clear();

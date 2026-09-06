@@ -351,4 +351,112 @@ public class VerifiedSignaturesTest {
 
         Assertions.assertTrue(psbtInput.getVerifiedSignatures(trusted()).isEmpty());
     }
+
+    /**
+     * A partial signature names the key that made it, and that name is written by whoever wrote the input. Verifying
+     * against the named key rather than against every key the caller holds is only sound while the name is checked for
+     * membership and the signature still has to verify: naming a key the caller vouches for buys nothing on its own.
+     */
+    @Test
+    public void a_forged_signature_under_a_trusted_key_name_is_not_counted() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+
+        TransactionSignature real = psbtInput.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+        byte[] forged = real.encodeToBitcoin();
+        forged[10] ^= 0x01;
+        psbtInput.getPartialSignatures().put(ECKey.fromPublicOnly(outputKey),
+                TransactionSignature.decodeFromBitcoin(TransactionSignature.Type.ECDSA, forged, false));
+
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(trusted()).isEmpty(),
+                "the name is not the guarantee, the signature is");
+    }
+
+    /**
+     * And a signature this key really did make, over another transaction, moved into this one. The message is rebuilt
+     * from this transaction, so a signature made over a different one cannot verify against it whoever made it.
+     */
+    @Test
+    public void a_signature_this_key_made_over_another_transaction_is_not_counted() {
+        PSBTInput other = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        TransactionSignature elsewhere = other.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+
+        //A different message: the amount this input spends is committed to, so changing it is enough
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        Script spk = ScriptType.P2WPKH.getOutputScript(PolicyType.SINGLE_HD, key());
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, VALUE - 20_000, spk.getProgram()));
+        psbtInput.getPartialSignatures().clear();
+        psbtInput.getPartialSignatures().put(ECKey.fromPublicOnly(outputKey), elsewhere);
+
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(trusted()).isEmpty(),
+                "a signature over another transaction says nothing about this one");
+    }
+
+    /**
+     * A public key in a PSBT is attacker supplied and is not checked when it is parsed: ECKey.fromPublicOnly wraps a
+     * lazy point, so a 33 byte value that is not on the curve is accepted and only throws when the point is first
+     * read. Verifying a partial signature against the key that names it reads that point, which is the one thing this
+     * method promises not to do: the caller is drawing a label, and an exception leaves whatever it said before.
+     *
+     * The old loop never touched a key from the PSBT at all, so this became reachable only by the change that made it
+     * check the named key.
+     */
+    @Test
+    public void a_public_key_that_is_not_on_the_curve_answers_nothing_rather_than_throwing() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        TransactionSignature real = psbtInput.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+
+        ECKey offCurve = ECKey.fromPublicOnly(Utils.hexToBytes("02" + "ff".repeat(32)));
+        psbtInput.getPartialSignatures().put(offCurve, real);
+
+        List<TransactionSignature> verified = Assertions.assertDoesNotThrow(
+                () -> psbtInput.getVerifiedSignatures(trusted()),
+                "a key that is not a point on the curve must not take the label with it");
+        Assertions.assertEquals(1, verified.size(),
+                "the real signature beside it still has to be found, not lost to the bad entry");
+    }
+
+    /**
+     * The caller's key and the key the PSBT names are the same key when they are the same point, whatever each carries
+     * around it. ECKey.equals compares the private field, so a caller vouching with a key it can sign with never
+     * matched the public one named in the input, and a swept key stopped being counted. The two encodings of one
+     * public key are the same point too.
+     */
+    @Test
+    public void a_key_is_matched_by_its_point_and_not_by_what_it_is_wrapped_in() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+
+        Assertions.assertEquals(1, psbtInput.getVerifiedSignatures(List.of(outputKey)).size(),
+                "a key carrying its private part is the same key as the public one the input names");
+
+        ECKey uncompressed = ECKey.fromPublicOnly(outputKey.getPubKeyPoint().getEncoded(false));
+        Assertions.assertEquals(65, uncompressed.getPubKey().length, "the fixture has to be the other encoding");
+        Assertions.assertEquals(1, psbtInput.getVerifiedSignatures(List.of(uncompressed)).size(),
+                "the two encodings of one public key are one key");
+
+        ECKey stranger = ECKey.fromPublicOnly(ECKey.fromPrivate(Utils.hexToBytes("44".repeat(32))).getPubKey());
+        Assertions.assertTrue(psbtInput.getVerifiedSignatures(List.of(stranger)).isEmpty(),
+                "and a different key is still a different key");
+    }
+
+    /**
+     * And the same key on the path a PSBT takes when it is opened. verifySignatures declares PSBTSignatureException
+     * and the caller catches that alone, so an IllegalArgumentException from decoding a key the PSBT names left the
+     * open flow uncaught. Pre-existing, and reachable from any file, paste or scan.
+     */
+    @Test
+    public void opening_a_psbt_naming_a_key_that_is_not_on_the_curve_is_refused_not_crashed() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        TransactionSignature real = psbtInput.getPartialSignature(ECKey.fromPublicOnly(outputKey));
+
+        psbtInput.getPartialSignatures().clear();
+        psbtInput.getPartialSignatures().put(ECKey.fromPublicOnly(Utils.hexToBytes("02" + "ff".repeat(32))), real);
+
+        Assertions.assertThrows(PSBTSignatureException.class, psbtInput::verifySignatures,
+                "a key that is not a point on the curve is an invalid PSBT, not an escaping runtime exception");
+    }
 }
