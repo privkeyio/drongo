@@ -1667,6 +1667,11 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         Map<PSBTInput, WalletNode> signingNodes = new LinkedHashMap<>();
         Map<Script, WalletNode> walletOutputScripts = getWalletOutputScripts();
 
+        //The fallback derives a key for every derivation an input names, and the PSBT names them. The fingerprint
+        //that gates it is in every PSBT you hand a cosigner, so a cosigner can name as many as they like: two
+        //hundred inputs naming two thousand each measured nine seconds, on whatever thread asked.
+        int[] derivationsLeft = {MAX_FALLBACK_DERIVATIONS};
+
         for(PSBTInput psbtInput : psbt.getPsbtInputs()) {
             TransactionOutput utxo = psbtInput.getUtxo();
 
@@ -1676,7 +1681,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
                 // BIP32-derivation fallback for inputs beyond the wallet's derived address range
                 if(signingNode == null && useDerivationFallback && policyType != PolicyType.SINGLE_SP) {
-                    signingNode = getSigningNodeFromDerivation(psbtInput, scriptPubKey);
+                    signingNode = getSigningNodeFromDerivation(psbtInput, scriptPubKey, derivationsLeft);
                 }
 
                 if(signingNode != null) {
@@ -1688,11 +1693,32 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         return signingNodes;
     }
 
-    private WalletNode getSigningNodeFromDerivation(PSBTInput psbtInput, Script scriptPubKey) {
+    /**
+     * The most derivations one input is worth looking through. An input names one per key in its script, so a twenty
+     * of twenty names twenty, and this is an order of magnitude past that. Per input as well as per transaction so
+     * that a crafted input cannot use up what the inputs after it need: with a transaction wide budget alone, a
+     * legitimate consolidation of five hundred inputs beyond the derived range spent it and the wallet then failed to
+     * find its own inputs, which is a wallet that will not sign rather than a label that reads badly.
+     */
+    private static final int MAX_INPUT_FALLBACK_DERIVATIONS = 256;
+
+    /**
+     * And the most across a whole transaction, since many inputs of a few derivations each add up. Far past what an
+     * honest transaction asks: a thousand inputs of a twenty key quorum come to twenty thousand.
+     */
+    private static final int MAX_FALLBACK_DERIVATIONS = 50_000;
+
+    private WalletNode getSigningNodeFromDerivation(PSBTInput psbtInput, Script scriptPubKey, int[] derivationsLeft) {
         Map<ECKey, KeyDerivation> derivedPublicKeys = psbtInput.getDerivedPublicKeys();
         Map<ECKey, Map<KeyDerivation, List<Sha256Hash>>> tapDerivedPublicKeys = psbtInput.getTapDerivedPublicKeys();
 
+        int forThisInput = MAX_INPUT_FALLBACK_DERIVATIONS;
+
         for(Map.Entry<ECKey, KeyDerivation> entry : derivedPublicKeys.entrySet()) {
+            if(forThisInput-- <= 0 || derivationsLeft[0]-- <= 0) {
+                return null;
+            }
+
             WalletNode node = matchDerivation(entry.getValue(), scriptPubKey);
             if(node != null) {
                 return node;
@@ -1701,6 +1727,10 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
         for(Map.Entry<ECKey, Map<KeyDerivation, List<Sha256Hash>>> entry : tapDerivedPublicKeys.entrySet()) {
             for(KeyDerivation keyDerivation : entry.getValue().keySet()) {
+                if(forThisInput-- <= 0 || derivationsLeft[0]-- <= 0) {
+                    return null;
+                }
+
                 WalletNode node = matchDerivation(keyDerivation, scriptPubKey);
                 if(node != null) {
                     return node;
