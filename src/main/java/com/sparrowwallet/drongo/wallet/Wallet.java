@@ -1694,17 +1694,23 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
     }
 
     /**
-     * The most derivations one input is worth looking through. An input names one per key in its script, so a twenty
-     * of twenty names twenty, and this is an order of magnitude past that. Per input as well as per transaction so
-     * that a crafted input cannot use up what the inputs after it need: with a transaction wide budget alone, a
-     * legitimate consolidation of five hundred inputs beyond the derived range spent it and the wallet then failed to
-     * find its own inputs, which is a wallet that will not sign rather than a label that reads badly.
+     * What one input's fallback may cost, counted in key derivations. An input names one derivation per key in its
+     * script, and each costs a key to compare plus the node's whole script to compare against, so a twenty of twenty
+     * costs about four hundred and twenty. Per input as well as per transaction so that a crafted input cannot use up
+     * what the inputs after it need: with a transaction wide budget alone, a legitimate consolidation beyond the
+     * derived range spent it and the wallet then failed to find its own inputs, which is a wallet that will not sign
+     * rather than a label that reads badly.
      */
-    private static final int MAX_INPUT_FALLBACK_DERIVATIONS = 256;
+    private static final int MAX_INPUT_FALLBACK_DERIVATIONS = 4_096;
 
     /**
-     * And the most across a whole transaction, since many inputs of a few derivations each add up. Far past what an
-     * honest transaction asks: a thousand inputs of a twenty key quorum come to twenty thousand.
+     * And the most across a whole transaction, since many inputs of a few derivations each add up.
+     *
+     * A derivation measures about twelve microseconds, so this is a little over half a second at the worst a PSBT can
+     * arrange. That is the trade being made: it leaves room for roughly two hundred inputs of a fifteen key wallet
+     * beyond its derived range, or twenty five thousand of a single signature one, and a transaction past that reads
+     * as not checked rather than freezing. The fallback only runs for inputs the wallet does not already recognise by
+     * script, so an ordinary spend never reaches it at all.
      */
     private static final int MAX_FALLBACK_DERIVATIONS = 50_000;
 
@@ -1712,10 +1718,16 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         Map<ECKey, KeyDerivation> derivedPublicKeys = psbtInput.getDerivedPublicKeys();
         Map<ECKey, Map<KeyDerivation, List<Sha256Hash>>> tapDerivedPublicKeys = psbtInput.getTapDerivedPublicKeys();
 
+        //Charged what a matched derivation actually costs. Each one derives a key to compare, and then derives the
+        //node's whole script to compare against, which is a key per keystore and none of it cached. Charging one
+        //apiece counted a fifteen key wallet at a sixteenth of its cost.
+        int perDerivation = 1 + getKeystores().size();
         int forThisInput = MAX_INPUT_FALLBACK_DERIVATIONS;
 
         for(Map.Entry<ECKey, KeyDerivation> entry : derivedPublicKeys.entrySet()) {
-            if(forThisInput-- <= 0 || derivationsLeft[0]-- <= 0) {
+            forThisInput -= perDerivation;
+            derivationsLeft[0] -= perDerivation;
+            if(forThisInput <= 0 || derivationsLeft[0] <= 0) {
                 return null;
             }
 
@@ -1727,7 +1739,9 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
         for(Map.Entry<ECKey, Map<KeyDerivation, List<Sha256Hash>>> entry : tapDerivedPublicKeys.entrySet()) {
             for(KeyDerivation keyDerivation : entry.getValue().keySet()) {
-                if(forThisInput-- <= 0 || derivationsLeft[0]-- <= 0) {
+                forThisInput -= perDerivation;
+                derivationsLeft[0] -= perDerivation;
+                if(forThisInput <= 0 || derivationsLeft[0] <= 0) {
                     return null;
                 }
 
