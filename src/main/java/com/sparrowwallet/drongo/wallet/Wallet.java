@@ -1694,15 +1694,29 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         return signingNodes;
     }
 
-    /** The most keys this will derive looking for inputs a wallet holds beyond its derived range. */
-    private static final int MAX_FALLBACK_DERIVATIONS = 10_000;
+    /**
+     * The most derivations one input is worth looking through. An input names one per key in its script, so a twenty
+     * of twenty names twenty, and this is an order of magnitude past that. Per input rather than only per transaction
+     * so that a crafted input cannot use up what the inputs after it need: with a transaction wide budget alone, a
+     * legitimate consolidation of five hundred inputs beyond the derived range spent it and the wallet then failed to
+     * find its own inputs, which is a wallet that will not sign rather than a label that reads badly.
+     */
+    private static final int MAX_INPUT_FALLBACK_DERIVATIONS = 256;
+
+    /**
+     * And the most across a whole transaction, since many inputs of a few derivations each add up. Far past what an
+     * honest transaction asks: a thousand inputs of a twenty key quorum come to twenty thousand.
+     */
+    private static final int MAX_FALLBACK_DERIVATIONS = 50_000;
 
     private WalletNode getSigningNodeFromDerivation(PSBTInput psbtInput, Script scriptPubKey, int[] derivationsLeft) {
         Map<ECKey, KeyDerivation> derivedPublicKeys = psbtInput.getDerivedPublicKeys();
         Map<ECKey, Map<KeyDerivation, List<Sha256Hash>>> tapDerivedPublicKeys = psbtInput.getTapDerivedPublicKeys();
 
+        int forThisInput = MAX_INPUT_FALLBACK_DERIVATIONS;
+
         for(Map.Entry<ECKey, KeyDerivation> entry : derivedPublicKeys.entrySet()) {
-            if(derivationsLeft[0]-- <= 0) {
+            if(forThisInput-- <= 0 || derivationsLeft[0]-- <= 0) {
                 return null;
             }
 
@@ -1714,7 +1728,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
         for(Map.Entry<ECKey, Map<KeyDerivation, List<Sha256Hash>>> entry : tapDerivedPublicKeys.entrySet()) {
             for(KeyDerivation keyDerivation : entry.getValue().keySet()) {
-                if(derivationsLeft[0]-- <= 0) {
+                if(forThisInput-- <= 0 || derivationsLeft[0]-- <= 0) {
                     return null;
                 }
 

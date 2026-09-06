@@ -93,10 +93,41 @@ public class SigningNodeFallbackTest {
     @Test
     public void it_stops_deriving_for_a_psbt_that_names_more_than_a_transaction_could() throws Exception {
         Wallet wallet = wallet();
-        //Past the ten thousand this will derive, and nowhere near what an honest transaction names
-        PSBT psbt = psbtWithDecoys(wallet, 30, 1000);
+        //Enough decoy inputs, each naming far more than an input can, to exhaust the transaction's whole allowance
+        PSBT psbt = psbtWithDecoys(wallet, 400, 1000);
 
         Assertions.assertTrue(wallet.getSigningNodes(psbt).isEmpty(),
                 "the decoys named more derivations than this may do, so it has to stop rather than work through them");
+    }
+
+    /**
+     * One input naming a great many must not cost the inputs after it anything.
+     *
+     * The bound was a single allowance for the whole transaction, so a crafted input ahead of the wallet's own spent
+     * it and the wallet then could not find an input it holds. That is a wallet that will not sign, which is worse
+     * than any label: getSigningNodes is what sign and finalise use to decide what they can sign at all.
+     */
+    @Test
+    public void an_input_naming_a_great_many_does_not_cost_the_ones_after_it() throws Exception {
+        Wallet wallet = wallet();
+        //Two decoys, each naming ten thousand, which the old transaction wide allowance would have spent entirely
+        PSBT psbt = psbtWithDecoys(wallet, 2, 10_000);
+
+        Assertions.assertEquals(1, wallet.getSigningNodes(psbt).size(),
+                "the wallet's own input is after them and still has to be found");
+    }
+
+    /**
+     * And a consolidation of ordinary inputs beyond the derived range is found to the end. A quorum names one
+     * derivation per key, so five hundred inputs of a twenty key wallet is ten thousand: the first allowance was
+     * exactly that, and every input past it stopped being found.
+     */
+    @Test
+    public void a_long_consolidation_beyond_the_derived_range_is_found_to_the_end() throws Exception {
+        Wallet wallet = wallet();
+        PSBT psbt = psbtWithDecoys(wallet, 600, 20);
+
+        Assertions.assertEquals(1, wallet.getSigningNodes(psbt).size(),
+                "an honest transaction of this shape must not exhaust what this may derive");
     }
 }
