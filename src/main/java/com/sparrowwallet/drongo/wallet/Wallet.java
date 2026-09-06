@@ -1667,12 +1667,6 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         Map<PSBTInput, WalletNode> signingNodes = new LinkedHashMap<>();
         Map<Script, WalletNode> walletOutputScripts = getWalletOutputScripts();
 
-        //The fallback derives a key for every derivation an input names, and the PSBT names them. The fingerprint
-        //that gates it is in every PSBT you hand a cosigner, so a cosigner can name as many as they like: two
-        //hundred inputs naming two thousand each measured nine seconds. An input names one derivation per key in its
-        //script, so a whole transaction's worth is tens, and this is far past anything a wallet is handed honestly.
-        int[] derivationsLeft = {MAX_FALLBACK_DERIVATIONS};
-
         for(PSBTInput psbtInput : psbt.getPsbtInputs()) {
             TransactionOutput utxo = psbtInput.getUtxo();
 
@@ -1682,7 +1676,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
                 // BIP32-derivation fallback for inputs beyond the wallet's derived address range
                 if(signingNode == null && useDerivationFallback && policyType != PolicyType.SINGLE_SP) {
-                    signingNode = getSigningNodeFromDerivation(psbtInput, scriptPubKey, derivationsLeft);
+                    signingNode = getSigningNodeFromDerivation(psbtInput, scriptPubKey);
                 }
 
                 if(signingNode != null) {
@@ -1694,32 +1688,11 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         return signingNodes;
     }
 
-    /**
-     * The most derivations one input is worth looking through. An input names one per key in its script, so a twenty
-     * of twenty names twenty, and this is an order of magnitude past that. Per input rather than only per transaction
-     * so that a crafted input cannot use up what the inputs after it need: with a transaction wide budget alone, a
-     * legitimate consolidation of five hundred inputs beyond the derived range spent it and the wallet then failed to
-     * find its own inputs, which is a wallet that will not sign rather than a label that reads badly.
-     */
-    private static final int MAX_INPUT_FALLBACK_DERIVATIONS = 256;
-
-    /**
-     * And the most across a whole transaction, since many inputs of a few derivations each add up. Far past what an
-     * honest transaction asks: a thousand inputs of a twenty key quorum come to twenty thousand.
-     */
-    private static final int MAX_FALLBACK_DERIVATIONS = 50_000;
-
-    private WalletNode getSigningNodeFromDerivation(PSBTInput psbtInput, Script scriptPubKey, int[] derivationsLeft) {
+    private WalletNode getSigningNodeFromDerivation(PSBTInput psbtInput, Script scriptPubKey) {
         Map<ECKey, KeyDerivation> derivedPublicKeys = psbtInput.getDerivedPublicKeys();
         Map<ECKey, Map<KeyDerivation, List<Sha256Hash>>> tapDerivedPublicKeys = psbtInput.getTapDerivedPublicKeys();
 
-        int forThisInput = MAX_INPUT_FALLBACK_DERIVATIONS;
-
         for(Map.Entry<ECKey, KeyDerivation> entry : derivedPublicKeys.entrySet()) {
-            if(forThisInput-- <= 0 || derivationsLeft[0]-- <= 0) {
-                return null;
-            }
-
             WalletNode node = matchDerivation(entry.getValue(), scriptPubKey);
             if(node != null) {
                 return node;
@@ -1728,10 +1701,6 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
         for(Map.Entry<ECKey, Map<KeyDerivation, List<Sha256Hash>>> entry : tapDerivedPublicKeys.entrySet()) {
             for(KeyDerivation keyDerivation : entry.getValue().keySet()) {
-                if(forThisInput-- <= 0 || derivationsLeft[0]-- <= 0) {
-                    return null;
-                }
-
                 WalletNode node = matchDerivation(keyDerivation, scriptPubKey);
                 if(node != null) {
                     return node;
@@ -2052,53 +2021,6 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         return results;
     }
 
-    /**
-     * Drops the signatures a quorum has no room for, keeping the ones that opt in.
-     *
-     * More signers than the threshold needs leaves a choice, and taking them in key order made it by accident: a 2 of
-     * 3 whose marked device signs last kept the two that do not opt in, and the transaction went out carrying no
-     * replay protection having had it. The signature that opts in is the one worth keeping, since one of them protects
-     * the whole transaction. Only the values are cleared, so every key stays in the map for the script, and the order
-     * of what is left is untouched, because CHECKMULTISIG requires signatures in the order of the keys.
-     */
-    static void retainThreshold(Map<ECKey, TransactionSignature> pubKeySignatures, int threshold, PSBTInput psbtInput) {
-        List<ECKey> present = pubKeySignatures.entrySet().stream().filter(entry -> entry.getValue() != null)
-                .map(Map.Entry::getKey).collect(Collectors.toList());
-        if(present.size() <= threshold) {
-            return;
-        }
-
-        //Preferred only where the signature verifies. A partial signature and the key naming it both come out of the
-        //PSBT, so the opt-in bit on its own is a claim anyone who wrote the file can make, and preferring on the bit
-        //alone would put one that verifies nothing ahead of one that does, every time rather than by luck. Where
-        //nothing can be checked this finds none of them preferred and falls back to key order, which is what it did
-        //before any of this.
-        //By the pair, not by the signature. A signature does not carry the key that made it and compares by hash type
-        //and by r and s, so asking whether it is among the verified ones answers yes for a second key that files a
-        //copy of it: both then took a slot, and the one whose key does not verify it does not spend.
-        Map<ECKey, TransactionSignature> verified = psbtInput.getVerifiedPartialSignatures(pubKeySignatures.keySet());
-
-        List<ECKey> keep = new ArrayList<>();
-        for(ECKey pubKey : present) {
-            TransactionSignature signature = pubKeySignatures.get(pubKey);
-            if(keep.size() < threshold && (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0
-                    && signature.equals(verified.get(pubKey))) {
-                keep.add(pubKey);
-            }
-        }
-        for(ECKey pubKey : present) {
-            if(keep.size() < threshold && !keep.contains(pubKey)) {
-                keep.add(pubKey);
-            }
-        }
-
-        for(ECKey pubKey : present) {
-            if(!keep.contains(pubKey)) {
-                pubKeySignatures.put(pubKey, null);
-            }
-        }
-    }
-
     public void finalise(PSBT psbt) {
         int threshold = getDefaultPolicy().getNumSignaturesRequired();
         Map<PSBTInput, WalletNode> signingNodes = getSigningNodes(psbt);
@@ -2154,7 +2076,6 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                         throw new IllegalArgumentException("Pubkeys of partial signatures do not match wallet pubkeys");
                     }
 
-                    retainThreshold(pubKeySignatures, threshold, psbtInput);
                     finalizedTxInput = signingWallet.getScriptType().addMultisigSpendingInput(signingWallet.getPolicyType(), transaction, utxo, threshold, pubKeySignatures);
                 } else {
                     throw new UnsupportedOperationException("Cannot finalise PSBT for policy type " + signingWallet.getPolicyType());
@@ -2204,7 +2125,6 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 return;
             }
 
-            retainThreshold(pubKeySignatures, inputThreshold, psbtInput);
             finalizedTxInput = inputScriptType.addMultisigSpendingInput(PolicyType.MULTI_HD, transaction, utxo, inputThreshold, pubKeySignatures);
         } else if(inputThreshold == 1) {
             ECKey pubKey;
