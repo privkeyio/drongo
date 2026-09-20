@@ -1005,7 +1005,11 @@ public class PSBTInput {
      * checking a large multisig consolidation and giving up on it. A finalised input carries pushes with no names.
      */
     public boolean namesItsKeys() {
-        return getFinalScriptWitness() == null && getFinalScriptSig() == null && getTapKeyPathSignature() == null;
+        //Only where a key path signature is the input's own signature. The field is a taproot one and nothing stops a
+        //file carrying it on an input of any other type, so reading it alone let a meaningless field decide that a
+        //quorum's partial signatures no longer name their keys, and every pair this would have found went unfound.
+        return getFinalScriptWitness() == null && getFinalScriptSig() == null
+                && (!isTaproot() || getTapKeyPathSignature() == null);
     }
 
     /**
@@ -1039,12 +1043,15 @@ public class PSBTInput {
 
         //By the point, not by the key. ECKey.equals compares the private part too, so a key the caller vouches for
         //publicly never matches the same key carrying a private one, and a swept key stopped being counted. The point
-        //is also what makes the two encodings of one key the same key.
-        Set<ECPoint> trusted = new HashSet<>();
+        //is also what makes the two encodings of one key the same key. The caller's own key is kept against it so the
+        //answer can be filed under that rather than under the one the file names: those two compare equal only while
+        //both happen to be private part free, so a caller holding a decrypted key would otherwise have looked up null
+        //for every pair and been told quietly that nothing verified.
+        Map<ECPoint, ECKey> trusted = new HashMap<>();
         for(ECKey trustedKey : trustedKeys) {
             ECPoint point = pointOf(trustedKey);
             if(point != null) {
-                trusted.add(point);
+                trusted.putIfAbsent(point, trustedKey);
             }
         }
 
@@ -1056,7 +1063,8 @@ public class PSBTInput {
             //not on the curve parses without complaint and only fails here. One of those must cost this entry and not
             //the whole input, and never the label.
             ECPoint named = pointOf(entry.getKey());
-            if(named == null || !trusted.contains(named)) {
+            ECKey trustedKey = named == null ? null : trusted.get(named);
+            if(trustedKey == null) {
                 continue;
             }
 
@@ -1078,7 +1086,7 @@ public class PSBTInput {
 
             try {
                 if(entry.getKey().verify(hash, signature)) {
-                    verified.put(entry.getKey(), signature);
+                    verified.put(trustedKey, signature);
                 }
             } catch(IllegalArgumentException e) {
                 //A key of the wrong kind for this signature verifies nothing, and says nothing about the others

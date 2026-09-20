@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Telling a signature from a push that merely looks like one.
@@ -458,5 +459,50 @@ public class VerifiedSignaturesTest {
 
         Assertions.assertThrows(PSBTSignatureException.class, psbtInput::verifySignatures,
                 "a key that is not a point on the curve is an invalid PSBT, not an escaping runtime exception");
+    }
+
+    /**
+     * A taproot key path signature on an input that is not taproot says nothing about whether its partial signatures
+     * name their keys, and must not stop them being checked.
+     *
+     * The field is a taproot one, nothing in the format stops a file carrying it on an input of any other type, and a
+     * 64 byte push decodes as a Schnorr signature without a single byte of it being checked. Reading it alone meant one
+     * meaningless field turned every pair this would have found into no pairs at all, and a caller choosing signatures
+     * on what verifies was quietly given nothing to choose on.
+     */
+    @Test
+    public void a_stray_taproot_field_does_not_stop_an_input_naming_its_keys() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        Assertions.assertTrue(psbtInput.namesItsKeys(), "the fixture must name its keys to begin with");
+        Assertions.assertEquals(1, psbtInput.getVerifiedPartialSignatures(trusted()).size(),
+                "the fixture must find its pair to begin with");
+
+        psbtInput.setTapKeyPathSignature(
+                TransactionSignature.decodeFromBitcoin(TransactionSignature.Type.SCHNORR, new byte[64], false));
+
+        Assertions.assertFalse(psbtInput.isTaproot(), "the fixture must not be taproot, or there is nothing to test");
+        Assertions.assertTrue(psbtInput.namesItsKeys(),
+                "a taproot field on an input that is not taproot decided its partial signatures have no names");
+        Assertions.assertEquals(1, psbtInput.getVerifiedPartialSignatures(trusted()).size(),
+                "one meaningless field cost every pair, so nothing could be chosen on what verifies");
+    }
+
+    /**
+     * A pair is answered under the key the caller vouched for, not the one the input names.
+     *
+     * They are the same point but not the same object, and ECKey.equals compares the private part, so a caller looking
+     * its own key up in the answer got null for every pair the moment one of them carried a private part. Nothing
+     * threw and nothing was logged: the caller was simply told that nothing verified.
+     */
+    @Test
+    public void a_pair_is_answered_under_the_key_the_caller_vouched_for() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        ECKey outputKey = ScriptType.P2WPKH.getOutputKey(PolicyType.SINGLE_HD, key());
+        Assertions.assertTrue(outputKey.hasPrivKey(), "the fixture's key must carry a private part");
+
+        Map<ECKey, TransactionSignature> verified = psbtInput.getVerifiedPartialSignatures(List.of(outputKey));
+        Assertions.assertEquals(1, verified.size(), "the signature verifies under this key");
+        Assertions.assertNotNull(verified.get(outputKey),
+                "the pair was filed under the key the input names, so the caller that vouched for it found nothing");
     }
 }
