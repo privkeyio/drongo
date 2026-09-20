@@ -1,7 +1,6 @@
 package com.sparrowwallet.drongo.wallet;
 
 import com.sparrowwallet.drongo.KeyPurpose;
-import com.sparrowwallet.drongo.Utils;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.Policy;
 import com.sparrowwallet.drongo.policy.PolicyType;
@@ -194,8 +193,8 @@ public class QuorumFinaliseTest {
 
     /**
      * The kept signatures stay in the order of the keys, which is what CHECKMULTISIG requires and the whole reason
-     * this may only choose which to keep and never reorder. Proven to spend for every script type against a node in
-     * spare_quorum_finalise.py; asserted here so a regression is caught without one.
+     * this may only choose which to keep and never reorder. Proven to spend for every script type against a node by
+     * SpareQuorumSpend; asserted here so a regression is caught without one.
      */
     @Test
     public void what_it_keeps_stays_in_the_order_of_the_keys() throws Exception {
@@ -381,5 +380,108 @@ public class QuorumFinaliseTest {
         Assertions.assertEquals(2, kept.size(), "a 2 of 3 keeps two");
         Assertions.assertEquals(2, kept.stream().distinct().count(),
                 "the same signature was kept twice, which CHECKMULTISIG cannot match against a second key");
+    }
+
+    /**
+     * A taproot field on an input that is not taproot must not cost the opt-in.
+     *
+     * Preference is decided on what verifies, and whether anything can be checked at all turned on a taproot key path
+     * signature being absent, with no test of the input's script type. Nothing in the format stops a file carrying that
+     * field on a P2WSH input and any 64 bytes decode as one, so whoever wrote the PSBT could add one meaningless field
+     * and send the choice back to key order: the opted-in signature dropped every time, the transaction still spending,
+     * and no sign anywhere that protection had been thrown away. Proven against a node by SpareQuorumSpend.
+     */
+    @Test
+    public void a_stray_taproot_field_does_not_cost_the_opt_in() throws Exception {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        Wallet wallet = wallet(ScriptType.P2WSH);
+        WalletNode node = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = wallet.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(90_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        psbtInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+
+        //Only the one that sorts last opts in, which is the case a key ordered choice loses
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        ECKey last = ordered.get(ordered.size() - 1);
+        for(Keystore keystore : wallet.getKeystores()) {
+            psbtInput.setSigHash(keystore.getPubKey(node).equals(last) ? SigHash.fromByte(unifiedAll) : SigHash.ALL);
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+
+        //Sixty four bytes of nothing, which is all it took
+        psbtInput.setTapKeyPathSignature(
+                TransactionSignature.decodeFromBitcoin(TransactionSignature.Type.SCHNORR, new byte[64], false));
+        Assertions.assertFalse(psbtInput.isTaproot(), "the fixture must not be taproot, or there is nothing to test");
+
+        wallet.finalise(psbt);
+
+        List<TransactionSignature> kept = new ArrayList<>(
+                psbt.getPsbtInputs().get(0).getFinalScriptWitness().getSignatures());
+        Assertions.assertEquals(2, kept.size(), "a 2 of 3 keeps two");
+        Assertions.assertTrue(kept.stream().anyMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
+                "a field that means nothing here sent the choice back to key order and the opt-in was dropped");
+    }
+
+    /**
+     * An input this wallet does not own goes through the other assembly path, and it has to choose the same way.
+     *
+     * finalise reaches it whenever no signing node matches, which is any PSBT carrying an input of someone else's
+     * quorum, and it is a second caller of the same choice. Its keys come from the input's own script rather than from
+     * a wallet, so what opts in there is whatever the file says, but the choice it makes is still the one that decides
+     * what gets broadcast.
+     */
+    @Test
+    public void an_input_this_wallet_does_not_own_keeps_the_one_that_opts_in() throws Exception {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        Wallet quorum = wallet(ScriptType.P2WSH);
+        WalletNode node = quorum.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = quorum.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(90_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        psbtInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        ECKey last = ordered.get(ordered.size() - 1);
+        for(Keystore keystore : quorum.getKeystores()) {
+            psbtInput.setSigHash(keystore.getPubKey(node).equals(last) ? SigHash.fromByte(unifiedAll) : SigHash.ALL);
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+
+        //A wallet with no node of its own for this input, so finalise takes the external path
+        Wallet stranger = wallet(ScriptType.P2WSH);
+        stranger.getKeystores().clear();
+        stranger.getKeystores().add(Keystore.fromSeed(
+                new DeterministicSeed("gospel dish rack fault text ocean pelican valid stereo damp gate leisure", "", 0,
+                        DeterministicSeed.Type.BIP39), PolicyType.MULTI_HD, ScriptType.P2WSH.getDefaultDerivation()));
+        stranger.setDefaultPolicy(Policy.getPolicy(PolicyType.MULTI_HD, ScriptType.P2WSH, stranger.getKeystores(), 1));
+        stranger.getNode(KeyPurpose.RECEIVE);
+        Assertions.assertNull(stranger.getSigningNodes(psbt).get(psbtInput),
+                "the fixture must reach the path for an input the wallet does not own");
+
+        stranger.finalise(psbt);
+
+        PSBTInput finalised = psbt.getPsbtInputs().get(0);
+        Assertions.assertNotNull(finalised.getFinalScriptWitness(), "the external input must have been finalised");
+        List<TransactionSignature> kept = new ArrayList<>(finalised.getFinalScriptWitness().getSignatures());
+        Assertions.assertEquals(2, kept.size(), "a 2 of 3 keeps two");
+        Assertions.assertTrue(kept.stream().anyMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
+                "the external path threw the opted-in signature away and broadcasts unprotected");
     }
 }
