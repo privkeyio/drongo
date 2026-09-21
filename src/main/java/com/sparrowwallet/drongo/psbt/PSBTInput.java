@@ -1037,9 +1037,6 @@ public class PSBTInput {
     /** As above, for an input whose signatures still name the keys that made them. */
     private Map<ECKey, TransactionSignature> verifiedPartialSignatures(Script signingScript, Collection<ECKey> trustedKeys) {
         Map<ECKey, TransactionSignature> partialSignatures = getPartialSignatures();
-        if(partialSignatures.size() > MAX_SIGNATURE_CHECKS) {
-            return Collections.emptyMap();
-        }
 
         //By the point, not by the key. ECKey.equals compares the private part too, so a key the caller vouches for
         //publicly never matches the same key carrying a private one, and a swept key stopped being counted. The point
@@ -1058,6 +1055,13 @@ public class PSBTInput {
         Map<ECKey, TransactionSignature> verified = new LinkedHashMap<>();
         Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
 
+        //Bounded by the checks actually made rather than by how many signatures the file carries. Nothing stops a file
+        //naming as many keys as it likes, and answering nothing at all for a large one let it decide that nothing
+        //verified: padding this map past the cap was enough to send a caller that chooses on what verifies back to
+        //whatever it falls back to, with the file none the worse for it. Only an entry naming a key the caller
+        //vouched for is ever checked, so the work here is the caller's key count and not the file's.
+        int checks = 0;
+
         for(Map.Entry<ECKey, TransactionSignature> entry : partialSignatures.entrySet()) {
             //The key is the PSBT's, so reading its point is reading attacker supplied bytes: a 33 byte value that is
             //not on the curve parses without complaint and only fails here. One of those must cost this entry and not
@@ -1066,6 +1070,10 @@ public class PSBTInput {
             ECKey trustedKey = named == null ? null : trusted.get(named);
             if(trustedKey == null) {
                 continue;
+            }
+
+            if(++checks > MAX_SIGNATURE_CHECKS) {
+                break;
             }
 
             TransactionSignature signature = entry.getValue();

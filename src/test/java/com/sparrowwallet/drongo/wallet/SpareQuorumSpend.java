@@ -29,9 +29,9 @@ import java.util.List;
  *   addresses                                  -> SCRIPTTYPE ADDRESS, one line each
  *   spend SCRIPTTYPE TXID VOUT VALUE OPTINGIN  -> SCRIPTTYPE RAWHEX
  *
- * Driven by hand rather than by the test suite. Start a node with -testactivationheight=blake2b@1, fund each printed
- * address, pass the outpoint back, and give the raw transaction to testmempoolaccept. Every script type accepts, the
- * signatures carry 01 and 21, and a node without the fork active refuses the same transaction, which is the protection
+ * Driven by hand rather than by the test suite. Against a node with the fork active, fund each printed address, pass
+ * the outpoint back, and give the raw transaction to testmempoolaccept. Every script type accepts, the signatures
+ * carry 01 and 21, and a node that never scheduled the fork refuses the same transaction, which is the protection
  * being kept. The Shrike wallet repository carries the full procedure in docs/unified-sighash-regtest.md.
  */
 public class SpareQuorumSpend {
@@ -44,6 +44,10 @@ public class SpareQuorumSpend {
 
     public static void main(String[] args) throws Exception {
         Network.set(Network.REGTEST);
+        if(args.length == 0 || !(args[0].equals("addresses") || args[0].equals("spend"))) {
+            throw new IllegalArgumentException("Usage: addresses | spend <scriptType> <txid> <vout> <value> <optingIn>");
+        }
+
         if(args[0].equals("addresses")) {
             for(ScriptType scriptType : TYPES) {
                 Wallet wallet = wallet(scriptType);

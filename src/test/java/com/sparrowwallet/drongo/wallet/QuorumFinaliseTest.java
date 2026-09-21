@@ -464,6 +464,10 @@ public class QuorumFinaliseTest {
             Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
         }
 
+        //Read before finalising, which clears them
+        List<TransactionSignature> expected = List.of(
+                psbtInput.getPartialSignature(ordered.get(0)), psbtInput.getPartialSignature(last));
+
         //A wallet with no node of its own for this input, so finalise takes the external path
         Wallet stranger = wallet(ScriptType.P2WSH);
         stranger.getKeystores().clear();
@@ -483,5 +487,67 @@ public class QuorumFinaliseTest {
         Assertions.assertEquals(2, kept.size(), "a 2 of 3 keeps two");
         Assertions.assertTrue(kept.stream().anyMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
                 "the external path threw the opted-in signature away and broadcasts unprotected");
+
+        //This path assembles a CHECKMULTISIG witness under the same constraint as the other one, so it owes the same
+        //order. Asserted here too rather than assumed from the wallet path, since it chooses through its own code.
+        Assertions.assertEquals(expected, kept,
+                "the kept signatures are not in the order of the keys, so this will not spend");
+    }
+
+    /**
+     * Padding the map with signatures nobody asked for must not cost the opt-in.
+     *
+     * Preference is decided on what verifies, and what verifies was answered for the whole input at once: past a cap
+     * on how many signatures it carried, the answer was nothing at all. A PSBT can name as many keys as it likes and
+     * sign for each of them, every one of those signatures verifying under the key naming it, so anyone who can edit
+     * the file in transit could pad it past the cap and send the choice back to key order. The transaction still
+     * spends, the opted-in signature is gone, and nothing says so. What is capped now is the checks actually made,
+     * which only entries naming a key the wallet vouched for can cause.
+     */
+    @Test
+    public void padding_the_signatures_does_not_cost_the_opt_in() throws Exception {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        Wallet wallet = wallet(ScriptType.P2WSH);
+        WalletNode node = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = wallet.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(90_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        psbtInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        ECKey last = ordered.get(ordered.size() - 1);
+        for(Keystore keystore : wallet.getKeystores()) {
+            psbtInput.setSigHash(keystore.getPubKey(node).equals(last) ? SigHash.fromByte(unifiedAll) : SigHash.ALL);
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+
+        psbtInput.setSigHash(SigHash.ALL);
+        for(int i = 0; i < 1022; i++) {
+            byte[] priv = new byte[32];
+            priv[0] = 0x11; priv[30] = (byte)(i >> 8); priv[31] = (byte)i;
+            Assertions.assertTrue(psbtInput.sign(ECKey.fromPrivate(priv)), "padding must sign");
+        }
+        Assertions.assertEquals(1025, psbtInput.getPartialSignatures().size(), "the map must be padded past the cap");
+
+        //The padding is what a wallet opening this file would accept: every one of those signatures verifies under the
+        //key naming it and carries a type the input asks for, so nothing rejects the file on the way in. Asserted so
+        //this stays a demonstration of something reachable rather than of a shape only a test can build.
+        Assertions.assertDoesNotThrow(psbt::verifySignatures, "a padded file must still open, or this proves nothing");
+
+        wallet.finalise(psbt);
+
+        List<TransactionSignature> kept = new ArrayList<>(
+                psbt.getPsbtInputs().get(0).getFinalScriptWitness().getSignatures());
+        Assertions.assertEquals(2, kept.size(), "a 2 of 3 keeps two");
+        Assertions.assertTrue(kept.stream().anyMatch(sig -> (sig.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
+                "padding the map sent the choice back to key order and the opt-in was dropped");
     }
 }

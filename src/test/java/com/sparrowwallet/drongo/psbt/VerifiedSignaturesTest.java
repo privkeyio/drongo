@@ -491,8 +491,10 @@ public class VerifiedSignaturesTest {
      * A pair is answered under the key the caller vouched for, not the one the input names.
      *
      * They are the same point but not the same object, and ECKey.equals compares the private part, so a caller looking
-     * its own key up in the answer got null for every pair the moment one of them carried a private part. Nothing
-     * threw and nothing was logged: the caller was simply told that nothing verified.
+     * its own key up in the answer would find null for every pair the moment either side carried one. No caller does
+     * today, since a wallet's node keys have their private part dropped, so this is a hazard rather than a failure
+     * anyone has hit; it is pinned here because nothing else would say when that stopped being true, and the answer
+     * it would give is that nothing verified.
      */
     @Test
     public void a_pair_is_answered_under_the_key_the_caller_vouched_for() {
@@ -504,5 +506,33 @@ public class VerifiedSignaturesTest {
         Assertions.assertEquals(1, verified.size(), "the signature verifies under this key");
         Assertions.assertNotNull(verified.get(outputKey),
                 "the pair was filed under the key the input names, so the caller that vouched for it found nothing");
+    }
+
+    /**
+     * A file that names more keys than the cap allows must not decide that nothing verifies.
+     *
+     * The cap is there so a hostile input cannot spend an unbounded amount of somebody's time, but it counted the
+     * signatures the file carries rather than the checks this would make, and answered nothing at all once they went
+     * past it. Anyone able to edit a PSBT can add signatures under keys of their own, each verifying under the key
+     * naming it, so padding it was enough to make this report that nothing verified. Only an entry naming a key the
+     * caller vouched for is ever checked, so that is what is counted now.
+     */
+    @Test
+    public void padding_the_signatures_does_not_hide_the_ones_that_verify() {
+        PSBTInput psbtInput = signedInput(SigHash.ALL.byteValue());
+        Assertions.assertEquals(1, psbtInput.getVerifiedPartialSignatures(trusted()).size(),
+                "the fixture must find its pair to begin with");
+
+        for(int i = 0; i < 1100; i++) {
+            byte[] priv = new byte[32];
+            priv[0] = 0x11;
+            priv[30] = (byte)(i >> 8);
+            priv[31] = (byte)i;
+            Assertions.assertTrue(psbtInput.sign(ECKey.fromPrivate(priv)), "the padding must sign");
+        }
+        Assertions.assertTrue(psbtInput.getPartialSignatures().size() > 1024, "the fixture must pass the cap");
+
+        Assertions.assertEquals(1, psbtInput.getVerifiedPartialSignatures(trusted()).size(),
+                "padding the file with signatures nobody vouched for hid the one that verifies");
     }
 }
