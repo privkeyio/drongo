@@ -13,11 +13,13 @@ import com.sparrowwallet.drongo.protocol.TransactionOutput;
 import com.sparrowwallet.drongo.protocol.TransactionSignature;
 import com.sparrowwallet.drongo.psbt.PSBT;
 import com.sparrowwallet.drongo.psbt.PSBTInput;
+import com.sparrowwallet.drongo.psbt.PSBTSignatureException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Which signatures a quorum keeps when more signers signed than it needs.
@@ -549,5 +551,128 @@ public class QuorumFinaliseTest {
         Assertions.assertEquals(2, kept.size(), "a 2 of 3 keeps two");
         Assertions.assertTrue(kept.stream().anyMatch(sig -> (sig.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
                 "padding the map sent the choice back to key order and the opt-in was dropped");
+    }
+
+    /**
+     * The gates that keep an unreadable signing script away from the choice.
+     *
+     * Choosing on what verifies leaves nothing to choose on when the message cannot be built, and an input whose
+     * signing script has been taken out is exactly that. Finalising would still assemble it, because the wallet
+     * rebuilds the script from its own keys rather than from the file, so the opt-in would go and the transaction
+     * would spend. Nothing in finalise notices; what keeps it away is that a file like this is refused when it is
+     * opened and again when a co-signer's copy is combined. Those two are load bearing for the choice and neither
+     * was pinned, so this pins them.
+     */
+    @Test
+    public void a_quorum_whose_signing_script_was_taken_out_is_refused_before_it_can_be_finalised() throws Exception {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        Wallet wallet = wallet(ScriptType.P2WSH);
+        WalletNode node = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = wallet.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addOutput(90_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        psbtInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        ECKey last = ordered.get(ordered.size() - 1);
+        for(Keystore keystore : wallet.getKeystores()) {
+            psbtInput.setSigHash(keystore.getPubKey(node).equals(last) ? SigHash.fromByte(unifiedAll) : SigHash.ALL);
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+        Assertions.assertDoesNotThrow(psbt::verifySignatures, "the fixture must open before it is taken apart");
+
+        //The script the message is built over, taken out while the signatures over it are left
+        psbtInput.setWitnessScript(null);
+        Assertions.assertNull(psbtInput.getSigningScript(), "the fixture must leave nothing to check against");
+        Assertions.assertTrue(psbtInput.getVerifiedPartialSignatures(node.getPubKeys()).isEmpty(),
+                "with no message to build there is nothing to choose on, which is what the gates below exist for");
+
+        Assertions.assertThrows(PSBTSignatureException.class, psbt::verifySignatures,
+                "a file with signatures over a script it no longer carries has to be refused when it is opened");
+
+        //And the other way in, as a co-signer's copy to be combined. Combining does not keep the script already held:
+        //a script arriving in the copy replaces it outright, so a co-signer can put this input's signatures against a
+        //message they were never made over. What refuses it is that the combined result is checked before it is kept.
+        PSBT open = new PSBT(transaction);
+        PSBTInput openInput = open.getPsbtInputs().get(0);
+        openInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        openInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+        for(Keystore keystore : wallet.getKeystores()) {
+            openInput.setSigHash(keystore.getPubKey(node).equals(last) ? SigHash.fromByte(unifiedAll) : SigHash.ALL);
+            Assertions.assertTrue(openInput.sign(keystore.getKey(node)), "every keystore must sign the open copy");
+        }
+
+        //Some other quorum's script, which is a script this input's signatures do not answer to
+        PSBT swapped = new PSBT(transaction);
+        PSBTInput swappedInput = swapped.getPsbtInputs().get(0);
+        swappedInput.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+        swappedInput.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, wallet(ScriptType.P2WSH)
+                .getNode(KeyPurpose.CHANGE).getChildren().iterator().next().getPubKeys()));
+        Assertions.assertNotEquals(openInput.getWitnessScript(), swappedInput.getWitnessScript(),
+                "the fixture must actually swap the script, or there is nothing to test");
+
+        Assertions.assertThrows(PSBTSignatureException.class, () -> open.verifyCombinedSignatures(swapped),
+                "a copy replacing the script the collected signatures were made over has to be refused");
+    }
+
+    /**
+     * A spent output missing from a different input must not quietly cost the opt-in on this one.
+     *
+     * The opted-in digest commits to every spent output in the transaction rather than only this input's, which is
+     * what makes it worth having. It also means an input elsewhere arriving without its spent output leaves that
+     * digest impossible to build, and the digest is worked out once per hash type, so what is lost is every opted-in
+     * signature at once while every legacy one still verifies. That is the whole preference gone, answered as though
+     * nothing opted in. It is not reachable, because a signature whose digest cannot be built is refused when the
+     * file is opened; this pins that, since nothing else does and the field only has to go missing.
+     */
+    @Test
+    public void a_spent_output_missing_elsewhere_is_refused_rather_than_costing_the_opt_in() throws Exception {
+        byte unifiedAll = (byte)(SigHash.UNIFIED_FLAG | SigHash.ALL.byteValue());
+        Wallet wallet = wallet(ScriptType.P2WSH);
+        WalletNode node = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+        Script spk = wallet.getOutputScript(node);
+
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        transaction.addInput(Sha256Hash.ZERO_HASH, 1, new Script(new byte[0]));
+        transaction.addOutput(180_000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        for(PSBTInput in : psbt.getPsbtInputs()) {
+            in.setWitnessUtxo(new TransactionOutput(null, 100_000L, spk.getProgram()));
+            in.setWitnessScript(ScriptType.MULTISIG.getOutputScript(2, node.getPubKeys()));
+        }
+
+        PSBTInput psbtInput = psbt.getPsbtInputs().get(0);
+        List<ECKey> ordered = new ArrayList<>(node.getPubKeys());
+        ordered.sort(new ECKey.LexicographicECKeyComparator());
+        ECKey last = ordered.get(ordered.size() - 1);
+        for(Keystore keystore : wallet.getKeystores()) {
+            psbtInput.setSigHash(keystore.getPubKey(node).equals(last) ? SigHash.fromByte(unifiedAll) : SigHash.ALL);
+            Assertions.assertTrue(psbtInput.sign(keystore.getKey(node)), "every keystore must sign");
+        }
+        Assertions.assertEquals(3, psbtInput.getVerifiedPartialSignatures(node.getPubKeys()).size(),
+                "all three pairs must be found while every spent output is present");
+
+        //The other input's spent output, taken out. This input is untouched and its signatures are not.
+        psbt.getPsbtInputs().get(1).setWitnessUtxo(null);
+
+        Map<ECKey, TransactionSignature> verified = psbtInput.getVerifiedPartialSignatures(node.getPubKeys());
+        Assertions.assertFalse(verified.isEmpty(), "the legacy signatures still have a message to be checked against");
+        Assertions.assertTrue(verified.values().stream()
+                        .noneMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0),
+                "the fixture must lose the opted-in pair, or it is not showing what it means to");
+
+        Assertions.assertThrows(PSBTSignatureException.class, psbt::verifySignatures,
+                "a file carrying a signature whose digest it cannot build has to be refused when it is opened");
     }
 }

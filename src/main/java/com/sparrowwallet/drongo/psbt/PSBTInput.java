@@ -1018,6 +1018,30 @@ public class PSBTInput {
      * A signature does not carry the key that made it, and TransactionSignature compares by hash type and by r and s,
      * so a caller pairing the two by value pairs a signature with any key that files a copy of it. Only the pair is
      * the fact, and a caller choosing which signature goes in which slot needs the pair rather than the signature.
+     *
+     * An empty answer means no pair was found, and it does not say whether any was looked for. A caller that chooses
+     * on what verifies reads those two the same way and quietly does whatever it does with nothing preferred, so
+     * every way of leaving here with nothing has to be one the file cannot bring about.
+     *
+     * Four of them are structural, and a quorum being finalised has none: no keys vouched for, no spent output, final
+     * fields already present, and a taproot key path signature on an input that really is taproot. The other two are
+     * the file's to write. A signing script that cannot be read leaves no message to build. So does a hash type whose
+     * digest cannot be built, and that one is not the single pair it looks like: the digest is worked out once per
+     * hash type byte, so it costs every signature carrying that byte, which for the opted-in type is the whole
+     * preference at once. The unified digest also commits to every spent output rather than this input's, so an
+     * entirely different input arriving without one is enough to null it.
+     *
+     * What keeps both away is that every signature on the file is checked against the state it arrived in, by
+     * PSBT.verifySignatures when it is opened and by verifyCombinedSignatures on every mutation after that. It is not
+     * that the state cannot change: combining replaces this input's scripts and its spent output with a co-signer's
+     * outright. It is that changing any of them invalidates the signatures already collected, and an opted-in one is
+     * the sharpest of those, since its digest covers every spent output in the transaction. The check that runs next
+     * refuses the file. Nothing in drongo enforces that a caller ran it, so a caller that finalises a PSBT it never
+     * verified turns both of these live at once.
+     *
+     * Two ways out of here were once reachable whatever a caller did: a cap counted on the signatures the file
+     * carried, so padding it answered nothing, and a taproot field on an input that is not taproot. Both cost the
+     * whole answer and neither left a trace. Adding a way out that a file can reach puts that back.
      */
     public Map<ECKey, TransactionSignature> getVerifiedPartialSignatures(Collection<ECKey> trustedKeys) {
         if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null || !namesItsKeys()) {
