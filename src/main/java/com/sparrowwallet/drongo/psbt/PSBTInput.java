@@ -1005,7 +1005,11 @@ public class PSBTInput {
      * checking a large multisig consolidation and giving up on it. A finalised input carries pushes with no names.
      */
     public boolean namesItsKeys() {
-        return getFinalScriptWitness() == null && getFinalScriptSig() == null && getTapKeyPathSignature() == null;
+        //Only where a key path signature is the input's own signature. The field is a taproot one and nothing stops a
+        //file carrying it on an input of any other type, so reading it alone let a meaningless field decide that a
+        //quorum's partial signatures no longer name their keys, and every pair this would have found went unfound.
+        return getFinalScriptWitness() == null && getFinalScriptSig() == null
+                && (!isTaproot() || getTapKeyPathSignature() == null);
     }
 
     /**
@@ -1014,6 +1018,30 @@ public class PSBTInput {
      * A signature does not carry the key that made it, and TransactionSignature compares by hash type and by r and s,
      * so a caller pairing the two by value pairs a signature with any key that files a copy of it. Only the pair is
      * the fact, and a caller choosing which signature goes in which slot needs the pair rather than the signature.
+     *
+     * An empty answer means no pair was found, and it does not say whether any was looked for. A caller that chooses
+     * on what verifies reads those two the same way and quietly does whatever it does with nothing preferred, so
+     * every way of leaving here with nothing has to be one the file cannot bring about.
+     *
+     * Four of them are structural, and a quorum being finalised has none: no keys vouched for, no spent output, final
+     * fields already present, and a taproot key path signature on an input that really is taproot. The other two are
+     * the file's to write. A signing script that cannot be read leaves no message to build. So does a hash type whose
+     * digest cannot be built, and that one is not the single pair it looks like: the digest is worked out once per
+     * hash type byte, so it costs every signature carrying that byte, which for the opted-in type is the whole
+     * preference at once. The unified digest also commits to every spent output rather than this input's, so an
+     * entirely different input arriving without one is enough to null it.
+     *
+     * What keeps both away is that every signature on the file is checked against the state it arrived in, by
+     * PSBT.verifySignatures when it is opened and by verifyCombinedSignatures on every mutation after that. It is not
+     * that the state cannot change: combining replaces this input's scripts and its spent output with a co-signer's
+     * outright. It is that changing any of them invalidates the signatures already collected, and an opted-in one is
+     * the sharpest of those, since its digest covers every spent output in the transaction. The check that runs next
+     * refuses the file. Nothing in drongo enforces that a caller ran it, so a caller that finalises a PSBT it never
+     * verified turns both of these live at once.
+     *
+     * Two ways out of here were once reachable whatever a caller did: a cap counted on the signatures the file
+     * carried, so padding it answered nothing, and a taproot field on an input that is not taproot. Both cost the
+     * whole answer and neither left a trace. Adding a way out that a file can reach puts that back.
      */
     public Map<ECKey, TransactionSignature> getVerifiedPartialSignatures(Collection<ECKey> trustedKeys) {
         if(trustedKeys == null || trustedKeys.isEmpty() || getUtxo() == null || !namesItsKeys()) {
@@ -1033,31 +1061,43 @@ public class PSBTInput {
     /** As above, for an input whose signatures still name the keys that made them. */
     private Map<ECKey, TransactionSignature> verifiedPartialSignatures(Script signingScript, Collection<ECKey> trustedKeys) {
         Map<ECKey, TransactionSignature> partialSignatures = getPartialSignatures();
-        if(partialSignatures.size() > MAX_SIGNATURE_CHECKS) {
-            return Collections.emptyMap();
-        }
 
         //By the point, not by the key. ECKey.equals compares the private part too, so a key the caller vouches for
         //publicly never matches the same key carrying a private one, and a swept key stopped being counted. The point
-        //is also what makes the two encodings of one key the same key.
-        Set<ECPoint> trusted = new HashSet<>();
+        //is also what makes the two encodings of one key the same key. The caller's own key is kept against it so the
+        //answer can be filed under that rather than under the one the file names: those two compare equal only while
+        //both happen to be private part free, so a caller holding a decrypted key would otherwise have looked up null
+        //for every pair and been told quietly that nothing verified.
+        Map<ECPoint, ECKey> trusted = new HashMap<>();
         for(ECKey trustedKey : trustedKeys) {
             ECPoint point = pointOf(trustedKey);
             if(point != null) {
-                trusted.add(point);
+                trusted.putIfAbsent(point, trustedKey);
             }
         }
 
         Map<ECKey, TransactionSignature> verified = new LinkedHashMap<>();
         Map<Byte, Sha256Hash> sigHashes = new HashMap<>();
 
+        //Bounded by the checks actually made rather than by how many signatures the file carries. Nothing stops a file
+        //naming as many keys as it likes, and answering nothing at all for a large one let it decide that nothing
+        //verified: padding this map past the cap was enough to send a caller that chooses on what verifies back to
+        //whatever it falls back to, with the file none the worse for it. Only an entry naming a key the caller
+        //vouched for is ever checked, so the work here is the caller's key count and not the file's.
+        int checks = 0;
+
         for(Map.Entry<ECKey, TransactionSignature> entry : partialSignatures.entrySet()) {
             //The key is the PSBT's, so reading its point is reading attacker supplied bytes: a 33 byte value that is
             //not on the curve parses without complaint and only fails here. One of those must cost this entry and not
             //the whole input, and never the label.
             ECPoint named = pointOf(entry.getKey());
-            if(named == null || !trusted.contains(named)) {
+            ECKey trustedKey = named == null ? null : trusted.get(named);
+            if(trustedKey == null) {
                 continue;
+            }
+
+            if(++checks > MAX_SIGNATURE_CHECKS) {
+                break;
             }
 
             TransactionSignature signature = entry.getValue();
@@ -1078,7 +1118,7 @@ public class PSBTInput {
 
             try {
                 if(entry.getKey().verify(hash, signature)) {
-                    verified.put(entry.getKey(), signature);
+                    verified.put(trustedKey, signature);
                 }
             } catch(IllegalArgumentException e) {
                 //A key of the wrong kind for this signature verifies nothing, and says nothing about the others
