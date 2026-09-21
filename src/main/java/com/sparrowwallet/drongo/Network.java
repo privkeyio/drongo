@@ -128,6 +128,22 @@ public enum Network {
     }
 
     /**
+     * The confirmations a coinbase output needs before it can be spent, being CoinbaseMaturityLong in the chain
+     * parameters.
+     *
+     * Accepting into the mempool holds every coinbase to it, so this is the depth a spend has to reach to relay at
+     * all. Connecting a block asks less, and only of outputs mined before the schedule began, which are all far
+     * deeper than this already. A window rather than a settled figure, and expected to be raised again.
+     */
+    public int getCoinbaseMaturity() {
+        return switch(this) {
+            case MAINNET -> 6480;       //973440 to 979920
+            case TESTNET4 -> 6705;      //151406 to 158111
+            default -> 100;             //no schedule, so the original depth stands
+        };
+    }
+
+    /**
      * How far left the difficulty target is shifted at the activation height, being consensus.Blake2bTargetShift.
      *
      * The block at the activation height takes its parent's target shifted by this and capped at the proof of work

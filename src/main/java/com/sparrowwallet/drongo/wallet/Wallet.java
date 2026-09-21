@@ -893,6 +893,19 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         return getWalletTxos(List.of(new SpentTxoFilter()));
     }
 
+    /**
+     * The value of the coinbase outputs held here that are not deep enough to spend yet.
+     *
+     * Taken from the filter that decides what can be spent rather than counted again, so the figure shown and the
+     * coins offered cannot disagree.
+     */
+    public long getImmatureBalance() {
+        CoinbaseTxoFilter coinbaseTxoFilter = new CoinbaseTxoFilter(this);
+        return getWalletTxos(List.of(new SpentTxoFilter())).keySet().stream()
+                .filter(txo -> !coinbaseTxoFilter.isEligible(txo))
+                .mapToLong(BlockTransactionHashIndex::getValue).sum();
+    }
+
     public Map<BlockTransactionHashIndex, WalletNode> getSpendableUtxos() {
         return getWalletTxos(List.of(new SpentTxoFilter(), new FrozenTxoFilter(), new CoinbaseTxoFilter(this)));
     }
