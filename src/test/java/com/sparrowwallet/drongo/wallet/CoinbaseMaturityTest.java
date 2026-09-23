@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -194,8 +195,8 @@ public class CoinbaseMaturityTest {
                 "a txo whose transaction is absent may not be refused");
     }
 
-    /** A wallet holding one coinbase output mined at the given height. */
-    private Wallet coinbaseWallet(int height) throws Exception {
+    /** A wallet holding one coinbase output mined at each of the given heights. */
+    private Wallet coinbaseWallet(int... heights) throws Exception {
         Wallet wallet = new Wallet();
         wallet.setPolicyType(com.sparrowwallet.drongo.policy.PolicyType.SINGLE_HD);
         wallet.setScriptType(com.sparrowwallet.drongo.protocol.ScriptType.P2WPKH);
@@ -208,14 +209,27 @@ public class CoinbaseMaturityTest {
                 com.sparrowwallet.drongo.protocol.ScriptType.P2WPKH, wallet.getKeystores(), null));
         WalletNode node = wallet.getNode(com.sparrowwallet.drongo.KeyPurpose.RECEIVE).getChildren().iterator().next();
 
-        Transaction transaction = new Transaction();
-        transaction.addInput(Sha256Hash.ZERO_HASH, 0xFFFFFFFFL, new Script(new byte[0]));
-        transaction.addOutput(50_00000000L, wallet.getOutputScript(node));
+        Map<Sha256Hash, BlockTransaction> transactions = new HashMap<>();
+        for(int height : heights) {
+            Transaction transaction = new Transaction();
+            //BIP34 puts the height in the coinbase scriptSig, which is also what keeps two of these apart
+            transaction.addInput(Sha256Hash.ZERO_HASH, 0xFFFFFFFFL, new Script(pushHeight(height)));
+            transaction.addOutput(50_00000000L, wallet.getOutputScript(node));
+            Assertions.assertTrue(transaction.isCoinBase(), "the fixture must be a coinbase");
 
-        Sha256Hash txid = transaction.getTxId();
-        wallet.updateTransactions(Map.of(txid, new BlockTransaction(txid, height, new Date(), 0L, transaction)));
-        node.getTransactionOutputs().add(new BlockTransactionHashIndex(txid, height, new Date(), 0L, 0, 50_00000000L));
+            Sha256Hash txid = transaction.getTxId();
+            transactions.put(txid, new BlockTransaction(txid, height, new Date(), 0L, transaction));
+            node.getTransactionOutputs().add(new BlockTransactionHashIndex(txid, height, new Date(), 0L, 0, 50_00000000L));
+        }
+
+        Assertions.assertEquals(heights.length, transactions.size(), "the fixtures must be distinct transactions");
+        wallet.updateTransactions(transactions);
         return wallet;
+    }
+
+    /** The height as a four byte push, which parses as a script rather than being logged as a broken one. */
+    private byte[] pushHeight(int height) {
+        return new byte[] {0x04, (byte)height, (byte)(height >> 8), (byte)(height >> 16), (byte)(height >> 24)};
     }
 
     /**
@@ -237,5 +251,51 @@ public class CoinbaseMaturityTest {
         deep.setStoredBlockHeight(tip);
         Assertions.assertFalse(deep.getSpendableUtxos().isEmpty(), "the fixture must be deep enough to spend");
         Assertions.assertEquals(0L, deep.getImmatureBalance(), "nothing is immature once it can be spent");
+    }
+
+    /**
+     * What is left to wait, counted in blocks, since that is what the rule is written in. Any time put on it is a
+     * guess about how fast blocks arrive, which is left to the caller to make and to hedge.
+     *
+     * Reported from the longest wait the wallet holds rather than the shortest, because the figure sits beside the
+     * whole immature amount, and that amount is not all there until the last of it comes free.
+     */
+    @Test
+    public void the_wait_is_counted_in_blocks() throws Exception {
+        Network.set(Network.MAINNET);
+        int maturity = Network.get().getCoinbaseMaturity();
+        int tip = 1_000_000;
+
+        Wallet wallet = coinbaseWallet(tip - 9);
+        wallet.setStoredBlockHeight(tip);
+        Assertions.assertEquals(maturity - 10, wallet.getImmatureBlocksRemaining(),
+                "ten confirmations in, the rest of the depth is still to come");
+
+        Wallet last = coinbaseWallet(tip - maturity + 2);
+        last.setStoredBlockHeight(tip);
+        Assertions.assertEquals(1, last.getImmatureBlocksRemaining(), "one short of the depth is one block to wait");
+
+        Wallet deep = coinbaseWallet(tip - maturity + 1);
+        deep.setStoredBlockHeight(tip);
+        Assertions.assertEquals(0, deep.getImmatureBlocksRemaining(), "nothing held is no wait at all");
+
+        Wallet unscanned = coinbaseWallet(tip - 9);
+        Assertions.assertEquals(0, unscanned.getImmatureBlocksRemaining(), "with no height there is no wait to report");
+    }
+
+    /** Two coinbases at different depths, where the longer wait is the one that covers both. */
+    @Test
+    public void the_wait_covers_the_last_of_it_to_come_free() throws Exception {
+        Network.set(Network.MAINNET);
+        int maturity = Network.get().getCoinbaseMaturity();
+        int tip = 1_000_000;
+
+        //One a single block short of spending, one only ten blocks in
+        Wallet wallet = coinbaseWallet(tip - maturity + 2, tip - 9);
+        wallet.setStoredBlockHeight(tip);
+
+        Assertions.assertEquals(100_00000000L, wallet.getImmatureBalance(), "both are held");
+        Assertions.assertEquals(maturity - 10, wallet.getImmatureBlocksRemaining(),
+                "the wait quoted beside that amount is the one the last of it has left");
     }
 }

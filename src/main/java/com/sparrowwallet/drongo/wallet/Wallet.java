@@ -906,6 +906,33 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 .mapToLong(BlockTransactionHashIndex::getValue).sum();
     }
 
+    /**
+     * The blocks still to be mined before every coinbase held here can be spent, or zero where none is waiting.
+     *
+     * Counted in blocks because that is what the rule is written in. Any time put on it is a guess about how fast
+     * blocks arrive, which is for the caller to make and to hedge.
+     */
+    public int getImmatureBlocksRemaining() {
+        CoinbaseTxoFilter coinbaseTxoFilter = new CoinbaseTxoFilter(this);
+        Integer tip = getStoredBlockHeight();
+        if(tip == null && !isMasterWallet()) {
+            tip = getMasterWallet().getStoredBlockHeight();
+        }
+        if(tip == null) {
+            return 0;
+        }
+
+        int maturity = Network.get().getCoinbaseMaturity();
+        int remaining = 0;
+        for(BlockTransactionHashIndex txo : getWalletTxos(List.of(new SpentTxoFilter())).keySet()) {
+            if(!coinbaseTxoFilter.isEligible(txo)) {
+                remaining = Math.max(remaining, maturity - txo.getConfirmations(tip));
+            }
+        }
+
+        return remaining;
+    }
+
     public Map<BlockTransactionHashIndex, WalletNode> getSpendableUtxos() {
         return getWalletTxos(List.of(new SpentTxoFilter(), new FrozenTxoFilter(), new CoinbaseTxoFilter(this)));
     }
