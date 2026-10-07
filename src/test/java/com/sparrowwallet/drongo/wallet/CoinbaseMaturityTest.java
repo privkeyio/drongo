@@ -297,5 +297,20 @@ public class CoinbaseMaturityTest {
         Assertions.assertEquals(100_00000000L, wallet.getImmatureBalance(), "both are held");
         Assertions.assertEquals(maturity - 10, wallet.getImmatureBlocksRemaining(),
                 "the wait quoted beside that amount is the one the last of it has left");
+        Assertions.assertEquals(1, wallet.getImmatureBlocksUntilFirst(), "the first of it comes free a block from now");
+    }
+
+    @Test
+    public void the_first_wait_is_zero_when_nothing_is_held() throws Exception {
+        Network.set(Network.MAINNET);
+        int maturity = Network.get().getCoinbaseMaturity();
+        int tip = 1_000_000;
+
+        Wallet deep = coinbaseWallet(tip - maturity + 1);
+        deep.setStoredBlockHeight(tip);
+        Assertions.assertEquals(0, deep.getImmatureBlocksUntilFirst());
+
+        Wallet unscanned = coinbaseWallet(tip - 9);
+        Assertions.assertEquals(0, unscanned.getImmatureBlocksUntilFirst());
     }
 }

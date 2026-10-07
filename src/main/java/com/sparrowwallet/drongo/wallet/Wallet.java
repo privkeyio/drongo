@@ -22,6 +22,7 @@ import java.security.SecureRandom;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static com.sparrowwallet.drongo.protocol.ScriptType.*;
 import static com.sparrowwallet.drongo.protocol.Transaction.WITNESS_SCALE_FACTOR;
@@ -913,24 +914,31 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
      * blocks arrive, which is for the caller to make and to hedge.
      */
     public int getImmatureBlocksRemaining() {
+        return getImmatureWaits().max().orElse(0);
+    }
+
+    /**
+     * The blocks still to be mined before the first coinbase held here can be spent, or zero where none is waiting.
+     */
+    public int getImmatureBlocksUntilFirst() {
+        return getImmatureWaits().min().orElse(0);
+    }
+
+    private IntStream getImmatureWaits() {
         CoinbaseTxoFilter coinbaseTxoFilter = new CoinbaseTxoFilter(this);
         Integer tip = getStoredBlockHeight();
         if(tip == null && !isMasterWallet()) {
             tip = getMasterWallet().getStoredBlockHeight();
         }
         if(tip == null) {
-            return 0;
+            return IntStream.empty();
         }
 
         int maturity = Network.get().getCoinbaseMaturity();
-        int remaining = 0;
-        for(BlockTransactionHashIndex txo : getWalletTxos(List.of(new SpentTxoFilter())).keySet()) {
-            if(!coinbaseTxoFilter.isEligible(txo)) {
-                remaining = Math.max(remaining, maturity - txo.getConfirmations(tip));
-            }
-        }
-
-        return remaining;
+        int height = tip;
+        return getWalletTxos(List.of(new SpentTxoFilter())).keySet().stream()
+                .filter(txo -> !coinbaseTxoFilter.isEligible(txo))
+                .mapToInt(txo -> maturity - txo.getConfirmations(height));
     }
 
     public Map<BlockTransactionHashIndex, WalletNode> getSpendableUtxos() {
