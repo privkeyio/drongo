@@ -934,11 +934,10 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
             return IntStream.empty();
         }
 
-        int maturity = Network.get().getCoinbaseMaturity();
         int height = tip;
         return getWalletTxos(List.of(new SpentTxoFilter())).keySet().stream()
                 .filter(txo -> !coinbaseTxoFilter.isEligible(txo))
-                .mapToInt(txo -> maturity - txo.getConfirmations(height));
+                .mapToInt(txo -> Network.get().getCoinbaseMaturity(txo.getHeight()) - txo.getConfirmations(height));
     }
 
     public Map<BlockTransactionHashIndex, WalletNode> getSpendableUtxos() {

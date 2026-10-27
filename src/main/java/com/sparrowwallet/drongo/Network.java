@@ -128,16 +128,19 @@ public enum Network {
     }
 
     /**
-     * The confirmations a coinbase output needs before it can be spent, being CoinbaseMaturityLong in the chain
-     * parameters.
+     * The confirmations a coinbase output mined at the given height needs before it can be spent, being the depth
+     * the mempool asks of it in the chain parameters.
      *
      * Accepting into the mempool holds every coinbase to it, so this is the depth a spend has to reach to relay at
-     * all. Connecting a block asks less, and only of outputs mined before the schedule began, which are all far
-     * deeper than this already. A window rather than a settled figure, and expected to be raised again.
+     * all. Connecting a block can ask less of outputs mined before 979919, which are all deeper than that already.
+     * On mainnet a reward mined at CoinbaseMaturityLongStartHeight or later waits CoinbaseMaturityLong, and one mined
+     * before it keeps the 6480 of the schedule it was mined under. Rewards mined once the parent's median time past
+     * reaches RdtsExpiryTime (1 September 2027) need only 100, which this does not know and overstates, refusing
+     * rather than offering; it wants the mining block's parent time once that date nears.
      */
-    public int getCoinbaseMaturity() {
+    public int getCoinbaseMaturity(int height) {
         return switch(this) {
-            case MAINNET -> 6480;       //973440 to 979920
+            case MAINNET -> height >= 979919 ? 25920 : 6480;
             case TESTNET4 -> 6705;      //151406 to 158111
             default -> 100;             //no schedule, so the original depth stands
         };
