@@ -11,7 +11,7 @@ import com.sparrowwallet.drongo.protocol.TransactionOutput;
 /**
  * Asks a node how deep a coinbase output has to be, rather than trusting the number this wallet carries.
  *
- * The depth is a schedule and is expected to be raised again, at which point getCoinbaseMaturity() is quietly too
+ * The depth is a schedule and is expected to be raised again, at which point getCoinbaseMaturity(int) is quietly too
  * permissive and the wallet offers coins that will not relay. This builds the two transactions that find the line:
  * one spending a coinbase a confirmation short of the depth, which has to be refused, and one spending a coinbase at
  * exactly the depth, which has to get past the maturity check. Maturity is checked before scripts, so the signature
@@ -20,9 +20,10 @@ import com.sparrowwallet.drongo.protocol.TransactionOutput;
  *   CoinbaseMaturityProbe <network> <txid> [txid...]
  *
  * For each coinbase txid it prints a raw transaction to hand to testmempoolaccept. Pick the txids by taking the
- * coinbase of the block at tip minus depth plus one, for the depth either side of the number printed below. A refusal
+ * coinbase of the block at tip minus depth plus one, for the depth either side of the number printed below, which is
+ * the one a reward mined near the tip needs (on mainnet, one mined before 979919 needs 6480). A refusal
  * reads `bad-txns-premature-spend-of-coinbase, tried to spend coinbase at depth N`, and N is the answer: if it
- * disagrees with the depth printed here, the schedule moved and Network.getCoinbaseMaturity() is stale.
+ * disagrees with the depth printed here, the schedule moved and Network.getCoinbaseMaturity(int) is stale.
  */
 public class CoinbaseMaturityProbe {
     public static void main(String[] args) {
@@ -32,7 +33,7 @@ public class CoinbaseMaturityProbe {
 
         Network network = Network.valueOf(args[0].toUpperCase());
         Network.set(network);
-        System.out.println("network=" + network + " expects a coinbase to be " + network.getCoinbaseMaturity()
+        System.out.println("network=" + network + " expects a coinbase to be " + network.getCoinbaseMaturity(Integer.MAX_VALUE)
                 + " confirmations deep");
 
         for(int i = 1; i < args.length; i++) {

@@ -47,6 +47,6 @@ public class CoinbaseTxoFilter implements TxoFilter {
             return false;
         }
 
-        return candidate.getConfirmations(tip) >= Network.get().getCoinbaseMaturity();
+        return candidate.getConfirmations(tip) >= Network.get().getCoinbaseMaturity(candidate.getHeight());
     }
 }

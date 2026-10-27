@@ -20,6 +20,9 @@ import java.util.Map;
  * so the wallet has to read it off the network it is on rather than hold one figure.
  */
 public class CoinbaseMaturityTest {
+    //Far enough past 979919 that every depth tested here was mined under the longer rule
+    private static final int TIP = 1_100_000;
+
     @AfterEach
     public void tearDown() {
         Network.set(null);
@@ -27,28 +30,45 @@ public class CoinbaseMaturityTest {
 
     @Test
     public void the_depth_is_the_one_the_network_asks_for() {
-        //Taken from CoinbaseMaturityLongReleaseHeight minus CoinbaseMaturityLongStartHeight in the chain parameters
-        Assertions.assertEquals(6480, Network.MAINNET.getCoinbaseMaturity(), "mainnet, 973440 to 979920");
-        Assertions.assertEquals(6705, Network.TESTNET4.getCoinbaseMaturity(), "testnet4, 151406 to 158111");
+        //Taken from CoinbaseMaturityPolicy in the chain parameters: the 6480 of the schedule from 973440 for anything
+        //mined before CoinbaseMaturityLongStartHeight, and CoinbaseMaturityLong from it
+        Assertions.assertEquals(6480, Network.MAINNET.getCoinbaseMaturity(979918), "mainnet, mined before 979919");
+        Assertions.assertEquals(25920, Network.MAINNET.getCoinbaseMaturity(979919), "mainnet, mined at 979919");
+        Assertions.assertEquals(25920, Network.MAINNET.getCoinbaseMaturity(979920), "mainnet, mined after 979919");
+        Assertions.assertEquals(6705, Network.TESTNET4.getCoinbaseMaturity(TIP), "testnet4, 151406 to 158111");
 
         //Carrying no schedule, these keep the hundred the protocol has always asked for
-        Assertions.assertEquals(100, Network.REGTEST.getCoinbaseMaturity(), "regtest carries no schedule");
-        Assertions.assertEquals(100, Network.TESTNET.getCoinbaseMaturity(), "testnet carries no schedule");
-        Assertions.assertEquals(100, Network.SIGNET.getCoinbaseMaturity(), "signet carries no schedule");
+        Assertions.assertEquals(100, Network.REGTEST.getCoinbaseMaturity(TIP), "regtest carries no schedule");
+        Assertions.assertEquals(100, Network.TESTNET.getCoinbaseMaturity(TIP), "testnet carries no schedule");
+        Assertions.assertEquals(100, Network.SIGNET.getCoinbaseMaturity(TIP), "signet carries no schedule");
     }
 
     /**
-     * The depth either side of the line, against the answer a node gave for the same two depths: a coinbase 6479 deep
-     * is refused as a premature spend, and one 6480 deep is past the maturity check.
+     * The depth either side of the line, against the answer a node gave for the same two depths: a coinbase one
+     * short is refused as a premature spend, and one at the depth is past the maturity check.
      */
     @Test
     public void a_coinbase_is_offered_only_once_it_is_deep_enough() {
         Network.set(Network.MAINNET);
-        int maturity = Network.get().getCoinbaseMaturity();
+        int maturity = Network.get().getCoinbaseMaturity(TIP);
 
         Assertions.assertFalse(eligible(maturity - 1), "a coinbase " + (maturity - 1) + " deep does not spend");
         Assertions.assertTrue(eligible(maturity), "a coinbase " + maturity + " deep does spend");
         Assertions.assertTrue(eligible(maturity + 1), "and anything deeper still does");
+    }
+
+    /**
+     * Each reward is held to the rule it was mined under. The first one under the longer rule, mined at 979919,
+     * spends in block 1005839, so the tip before that one; a reward a block older keeps 6480.
+     */
+    @Test
+    public void each_reward_keeps_the_depth_it_was_mined_under() {
+        Network.set(Network.MAINNET);
+
+        Assertions.assertFalse(eligibleAt(979919, 1005837), "mined at 979919, a block short");
+        Assertions.assertTrue(eligibleAt(979919, 1005838), "mined at 979919, spendable in block 1005839");
+        Assertions.assertFalse(eligibleAt(979918, 979918 + 6478), "mined at 979918, a block short of 6480");
+        Assertions.assertTrue(eligibleAt(979918, 979918 + 6479), "mined at 979918, 6480 deep");
     }
 
     /** The hundred the wallet used to allow is far short of it, which is the whole of this. */
@@ -71,9 +91,16 @@ public class CoinbaseMaturityTest {
     }
 
     private boolean eligible(int confirmations, boolean coinbase) {
-        int tip = 1_000_000;
         //getConfirmations is tip - height + 1, the same count the network calls actual_maturity
-        int height = tip - confirmations + 1;
+        return eligibleAt(TIP - confirmations + 1, TIP, coinbase);
+    }
+
+    private boolean eligibleAt(int height, int tip) {
+        return eligibleAt(height, tip, true);
+    }
+
+    private boolean eligibleAt(int height, int tip, boolean coinbase) {
+        int confirmations = tip - height + 1;
 
         Transaction transaction = new Transaction();
         if(coinbase) {
@@ -104,7 +131,7 @@ public class CoinbaseMaturityTest {
     @Test
     public void an_immature_coinbase_is_not_offered_to_spend() throws Exception {
         Network.set(Network.MAINNET);
-        int maturity = Network.get().getCoinbaseMaturity();
+        int maturity = Network.get().getCoinbaseMaturity(TIP);
 
         Assertions.assertTrue(spendable(maturity - 1).isEmpty(), "a coinbase short of the depth may not be chosen");
         Assertions.assertFalse(spendable(maturity).isEmpty(), "and one that reaches it may");
@@ -112,7 +139,7 @@ public class CoinbaseMaturityTest {
 
     /** A wallet holding one coinbase output that many confirmations deep, and what it will spend. */
     private Map<BlockTransactionHashIndex, WalletNode> spendable(int confirmations) throws Exception {
-        int tip = 1_000_000;
+        int tip = TIP;
         int height = tip - confirmations + 1;
 
         Wallet wallet = new Wallet();
@@ -151,11 +178,11 @@ public class CoinbaseMaturityTest {
     public void a_coinbase_whose_depth_is_unknown_is_not_offered() throws Exception {
         Network.set(Network.MAINNET);
 
-        Wallet wallet = coinbaseWallet(1_000_000 - 10);
+        Wallet wallet = coinbaseWallet(TIP - 10);
         wallet.setStoredBlockHeight(null);
         Assertions.assertTrue(wallet.getSpendableUtxos().isEmpty(), "with no height there is no depth to check against");
 
-        wallet.setStoredBlockHeight(1_000_000);
+        wallet.setStoredBlockHeight(TIP);
         Assertions.assertTrue(wallet.getSpendableUtxos().isEmpty(), "and it is still short of the depth once there is");
     }
 
@@ -168,7 +195,7 @@ public class CoinbaseMaturityTest {
         Network.set(Network.MAINNET);
 
         Wallet master = coinbaseWallet(1);
-        master.setStoredBlockHeight(1_000_000);
+        master.setStoredBlockHeight(TIP);
 
         Wallet account = coinbaseWallet(1);
         account.setStoredBlockHeight(null);
@@ -185,7 +212,7 @@ public class CoinbaseMaturityTest {
         Network.set(Network.MAINNET);
 
         Wallet wallet = coinbaseWallet(1);
-        wallet.setStoredBlockHeight(1_000_000);
+        wallet.setStoredBlockHeight(TIP);
 
         //A hash this wallet holds no transaction for, which is what an unfetched one looks like here
         BlockTransactionHashIndex unfetched = new BlockTransactionHashIndex(
@@ -239,8 +266,8 @@ public class CoinbaseMaturityTest {
     @Test
     public void the_immature_balance_is_what_cannot_be_spent() throws Exception {
         Network.set(Network.MAINNET);
-        int maturity = Network.get().getCoinbaseMaturity();
-        int tip = 1_000_000;
+        int maturity = Network.get().getCoinbaseMaturity(TIP);
+        int tip = TIP;
 
         Wallet shallow = coinbaseWallet(tip - maturity + 2);
         shallow.setStoredBlockHeight(tip);
@@ -263,8 +290,8 @@ public class CoinbaseMaturityTest {
     @Test
     public void the_wait_is_counted_in_blocks() throws Exception {
         Network.set(Network.MAINNET);
-        int maturity = Network.get().getCoinbaseMaturity();
-        int tip = 1_000_000;
+        int maturity = Network.get().getCoinbaseMaturity(TIP);
+        int tip = TIP;
 
         Wallet wallet = coinbaseWallet(tip - 9);
         wallet.setStoredBlockHeight(tip);
@@ -287,8 +314,8 @@ public class CoinbaseMaturityTest {
     @Test
     public void the_wait_covers_the_last_of_it_to_come_free() throws Exception {
         Network.set(Network.MAINNET);
-        int maturity = Network.get().getCoinbaseMaturity();
-        int tip = 1_000_000;
+        int maturity = Network.get().getCoinbaseMaturity(TIP);
+        int tip = TIP;
 
         //One a single block short of spending, one only ten blocks in
         Wallet wallet = coinbaseWallet(tip - maturity + 2, tip - 9);
@@ -303,8 +330,8 @@ public class CoinbaseMaturityTest {
     @Test
     public void the_first_wait_is_zero_when_nothing_is_held() throws Exception {
         Network.set(Network.MAINNET);
-        int maturity = Network.get().getCoinbaseMaturity();
-        int tip = 1_000_000;
+        int maturity = Network.get().getCoinbaseMaturity(TIP);
+        int tip = TIP;
 
         Wallet deep = coinbaseWallet(tip - maturity + 1);
         deep.setStoredBlockHeight(tip);
@@ -312,5 +339,19 @@ public class CoinbaseMaturityTest {
 
         Wallet unscanned = coinbaseWallet(tip - 9);
         Assertions.assertEquals(0, unscanned.getImmatureBlocksUntilFirst());
+    }
+
+    /** Rewards either side of 979919 wait by their own rules, so the shorter one comes free first. */
+    @Test
+    public void the_waits_follow_each_rewards_own_rule() throws Exception {
+        Network.set(Network.MAINNET);
+        int tip = 979919 + 99;
+
+        Wallet wallet = coinbaseWallet(979918, 979919);
+        wallet.setStoredBlockHeight(tip);
+
+        Assertions.assertEquals(100_00000000L, wallet.getImmatureBalance(), "both are held");
+        Assertions.assertEquals(6480 - 101, wallet.getImmatureBlocksUntilFirst(), "the older one waits 6480");
+        Assertions.assertEquals(25920 - 100, wallet.getImmatureBlocksRemaining(), "the newer one waits 25920");
     }
 }
