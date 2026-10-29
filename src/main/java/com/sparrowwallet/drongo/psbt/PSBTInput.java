@@ -1449,7 +1449,7 @@ public class PSBTInput {
         return false;
     }
 
-    Collection<TransactionSignature> verifyFinalizedSignatures() throws PSBTSignatureException {
+    public Collection<TransactionSignature> verifyFinalizedSignatures() throws PSBTSignatureException {
         if(!isFinalized()) {
             throw new PSBTSignatureException("Input " + index + " is not finalized by the provided PSBT");
         }
