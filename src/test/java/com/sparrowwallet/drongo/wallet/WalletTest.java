@@ -12,6 +12,7 @@ import com.sparrowwallet.drongo.policy.Policy;
 import com.sparrowwallet.drongo.psbt.PSBT;
 import com.sparrowwallet.drongo.psbt.PSBTInput;
 import com.sparrowwallet.drongo.psbt.PSBTOutput;
+import com.sparrowwallet.drongo.psbt.PSBTSignatureException;
 import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.*;
 import com.sparrowwallet.drongo.silentpayments.InvalidSilentPaymentException;
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
@@ -469,6 +471,27 @@ public class WalletTest {
     }
 
     @Test
+    public void duplicateExtendedKeysTest() throws MnemonicException, InvalidWalletException {
+        Wallet wallet = buildMultisigWallet(ScriptType.P2WSH, 3);
+        wallet.checkWallet();
+        Assertions.assertFalse(wallet.containsDuplicateExtendedKeys());
+
+        Keystore original = wallet.getKeystores().get(1);
+        ExtendedKey xpub = original.getExtendedPublicKey();
+        Keystore duplicate = new Keystore("Keystore 3");
+        duplicate.setSource(KeystoreSource.SW_WATCH);
+        duplicate.setWalletModel(WalletModel.SPARROW);
+        duplicate.setKeyDerivation(original.getKeyDerivation().copy());
+        duplicate.setExtendedPublicKey(new ExtendedKey(xpub.getKey(), new byte[] {1, 2, 3, 4}, xpub.getKeyChildNumber()));
+        Assertions.assertNotEquals(xpub.toString(), duplicate.getExtendedPublicKey().toString());
+        wallet.getKeystores().set(2, duplicate);
+
+        Assertions.assertTrue(wallet.containsDuplicateExtendedKeys());
+        InvalidWalletException e = Assertions.assertThrows(InvalidWalletException.class, wallet::checkWallet);
+        Assertions.assertTrue(e.getMessage().contains("duplicate extended public keys"));
+    }
+
+    @Test
     public void testMalformedOpReturnDoesNotBreakCoinSelection() {
         Wallet wallet = buildFundedWallet(new Script(List.of(ScriptChunk.fromOpcode(ScriptOpCodes.OP_RETURN), ScriptChunk.fromOpcode(ScriptOpCodes.OP_1))), true);
 
@@ -834,5 +857,167 @@ public class WalletTest {
         }
 
         return transaction;
+    }
+
+    @Test
+    public void signedInputsVerifyForEveryScriptType() throws Exception {
+        for(ScriptType scriptType : List.of(ScriptType.P2PKH, ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH, ScriptType.P2TR)) {
+            assertSignedInputs(scriptType, PolicyType.SINGLE_HD, 1);
+        }
+        for(ScriptType scriptType : List.of(ScriptType.P2SH, ScriptType.P2SH_P2WSH, ScriptType.P2WSH)) {
+            assertSignedInputs(scriptType, PolicyType.MULTI_HD, 3);
+        }
+    }
+
+    @Test
+    public void taprootInputIsUnsignedWhereASpentTransactionIsUnknown() throws Exception {
+        Wallet wallet = buildSigningWallet(ScriptType.P2TR, PolicyType.SINGLE_HD, 1);
+        Transaction signed = createSignedTransaction(wallet);
+
+        //A foreign input, as a payjoin adds: the taproot signature hash commits to its output, which must be known for the wallet input to be checked
+        Transaction withForeignInput = new Transaction(signed.bitcoinSerialize());
+        withForeignInput.addInput(Sha256Hash.wrap("1100000000000000000000000000000000000000000000000000000000000000"), 0, new Script(new byte[0]));
+
+        Assertions.assertEquals(1, wallet.getUnsignedInputs(withForeignInput, txid -> getWalletTransactionBody(wallet, txid)).size());
+    }
+
+    @Test
+    public void inputsNotFromTheWalletAreNotChecked() throws Exception {
+        Wallet wallet = buildSigningWallet(ScriptType.P2WPKH, PolicyType.SINGLE_HD, 1);
+        WalletNode addressNode = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+
+        Transaction incoming = new Transaction();
+        incoming.addInput(Sha256Hash.wrap("1100000000000000000000000000000000000000000000000000000000000000"), 0, new Script(new byte[0]));
+        incoming.addOutput(100_000L, wallet.getAddress(addressNode));
+
+        Assertions.assertTrue(wallet.getUnsignedInputs(incoming, txid -> getWalletTransactionBody(wallet, txid)).isEmpty());
+    }
+
+    private void assertSignedInputs(ScriptType scriptType, PolicyType policyType, int keystoreCount) throws Exception {
+        Wallet wallet = buildSigningWallet(scriptType, policyType, keystoreCount);
+        Transaction signed = createSignedTransaction(wallet);
+
+        Assertions.assertTrue(wallet.getUnsignedInputs(signed, txid -> getWalletTransactionBody(wallet, txid)).isEmpty(), scriptType + " inputs must verify");
+
+        Transaction altered = new Transaction(signed.bitcoinSerialize());
+        altered.getOutputs().getFirst().setScriptBytes(ScriptType.P2WPKH.getOutputScript(Utils.hexToBytes("bb00000000000000000000000000000000000022")).getProgram());
+        altered = new Transaction(altered.bitcoinSerialize());
+
+        Assertions.assertNotEquals(signed.getTxId(), altered.getTxId());
+        Assertions.assertEquals(altered.getInputs().size(), wallet.getUnsignedInputs(altered, txid -> getWalletTransactionBody(wallet, txid)).size(),
+                scriptType + " inputs must not verify once the outputs change");
+    }
+
+    @Test
+    public void optedInInputsVerifyAgainstTheGivenLookup() throws Exception {
+        for(ScriptType scriptType : List.of(ScriptType.P2PKH, ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH, ScriptType.P2TR)) {
+            assertOptedInInputs(scriptType, PolicyType.SINGLE_HD, 1);
+        }
+        for(ScriptType scriptType : List.of(ScriptType.P2SH, ScriptType.P2SH_P2WSH, ScriptType.P2WSH)) {
+            assertOptedInInputs(scriptType, PolicyType.MULTI_HD, 3);
+        }
+    }
+
+    private void assertOptedInInputs(ScriptType scriptType, PolicyType policyType, int keystoreCount) throws Exception {
+        Wallet wallet = buildSigningWallet(scriptType, policyType, keystoreCount);
+        Transaction signed = createSignedTransaction(wallet, SigHash.UNIFIED_ALL);
+        for(TransactionInput input : signed.getInputs()) {
+            List<TransactionSignature> signatures = input.hasWitness() ? input.getWitness().getSignatures() : input.getScriptSig().getSignatures();
+            Assertions.assertFalse(signatures.isEmpty(), scriptType + " must carry signatures");
+            Assertions.assertTrue(signatures.stream().allMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0), scriptType + " must opt in");
+        }
+
+        //A wallet holding none of the spent transactions, so they come only from the lookup, as for an unconfirmed spend found in a history fetch
+        Wallet verifier = buildSigningWallet(scriptType, policyType, keystoreCount);
+        Assertions.assertTrue(verifier.getTransactions().isEmpty());
+        Assertions.assertTrue(verifier.getUnsignedInputs(signed, txid -> getWalletTransactionBody(wallet, txid)).isEmpty(), scriptType + " opted in inputs must verify");
+
+        Transaction altered = new Transaction(signed.bitcoinSerialize());
+        altered.getOutputs().getFirst().setScriptBytes(ScriptType.P2WPKH.getOutputScript(Utils.hexToBytes("bb00000000000000000000000000000000000022")).getProgram());
+        altered = new Transaction(altered.bitcoinSerialize());
+        Assertions.assertEquals(altered.getInputs().size(), verifier.getUnsignedInputs(altered, txid -> getWalletTransactionBody(wallet, txid)).size(),
+                scriptType + " opted in inputs must not verify once the outputs change");
+    }
+
+    @Test
+    public void optedInFinalizedSignaturesVerify() throws Exception {
+        for(ScriptType scriptType : List.of(ScriptType.P2PKH, ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH, ScriptType.P2TR)) {
+            assertOptedInFinalizedSignatures(scriptType, PolicyType.SINGLE_HD, 1);
+        }
+        for(ScriptType scriptType : List.of(ScriptType.P2SH, ScriptType.P2SH_P2WSH, ScriptType.P2WSH)) {
+            assertOptedInFinalizedSignatures(scriptType, PolicyType.MULTI_HD, 3);
+        }
+    }
+
+    private void assertOptedInFinalizedSignatures(ScriptType scriptType, PolicyType policyType, int keystoreCount) throws Exception {
+        Wallet wallet = buildSigningWallet(scriptType, policyType, keystoreCount);
+        PSBT psbt = createSignedPsbt(wallet, SigHash.UNIFIED_ALL);
+        for(PSBTInput psbtInput : psbt.getPsbtInputs()) {
+            Collection<TransactionSignature> signatures = psbtInput.verifyFinalizedSignatures();
+            Assertions.assertFalse(signatures.isEmpty(), scriptType + " must carry signatures");
+            Assertions.assertTrue(signatures.stream().allMatch(signature -> (signature.sighashFlags & SigHash.UNIFIED_FLAG) != 0), scriptType + " must opt in");
+        }
+
+        PSBT altered = PSBT.fromString(psbt.toBase64String());
+        Script redirected = ScriptType.P2WPKH.getOutputScript(Utils.hexToBytes("bb00000000000000000000000000000000000022"));
+        altered.getPsbtOutputs().getFirst().setScript(redirected);
+        Assertions.assertArrayEquals(redirected.getProgram(), altered.getTransaction().getOutputs().getFirst().getScript().getProgram(), "the outputs must really change, or this proves nothing");
+        for(PSBTInput psbtInput : altered.getPsbtInputs()) {
+            Assertions.assertThrows(PSBTSignatureException.class, psbtInput::verifyFinalizedSignatures, scriptType + " opted in signatures must not verify once the outputs change");
+        }
+    }
+
+    private Transaction createSignedTransaction(Wallet wallet) throws Exception {
+        return createSignedTransaction(wallet, null);
+    }
+
+    private Transaction createSignedTransaction(Wallet wallet, SigHash sigHash) throws Exception {
+        return createSignedPsbt(wallet, sigHash).extractTransaction();
+    }
+
+    private PSBT createSignedPsbt(Wallet wallet, SigHash sigHash) throws Exception {
+        WalletNode addressNode = wallet.getNode(KeyPurpose.RECEIVE).getChildren().iterator().next();
+
+        Transaction funding = new Transaction();
+        funding.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+        funding.addOutput(1_000_000L, wallet.getAddress(addressNode));
+        wallet.updateTransactions(Map.of(funding.getTxId(), new BlockTransaction(funding.getTxId(), 800000, new Date(), 0L, funding)));
+        addressNode.getTransactionOutputs().add(new BlockTransactionHashIndex(funding.getTxId(), 800000, new Date(), 0L, 0, 1_000_000L));
+
+        TransactionParameters params = new TransactionParameters(List.of(new PriorityUtxoSelector(800006)), Collections.emptyList(),
+                List.of(new Payment(wallet.getAddress(addressNode), "test", 500_000L, false)), Collections.emptyList(),
+                Collections.emptySet(), 10.0d, 1.0d, 1.0d, null, 800006, false, false, true);
+        PSBT psbt = wallet.createWalletTransaction(params).createPSBT();
+        if(sigHash != null) {
+            psbt.getPsbtInputs().forEach(psbtInput -> psbtInput.setSigHash(sigHash));
+        }
+        wallet.sign(psbt);
+        wallet.finalise(psbt);
+
+        return psbt;
+    }
+
+    private Wallet buildSigningWallet(ScriptType scriptType, PolicyType policyType, int keystoreCount) throws MnemonicException {
+        Wallet wallet = new Wallet();
+        wallet.setPolicyType(policyType);
+        wallet.setScriptType(scriptType);
+
+        for(int i = 0; i < keystoreCount; i++) {
+            DeterministicSeed seed = new DeterministicSeed(Utils.hexToBytes(String.format("%032x", i + 1)), "", 0);
+            Keystore keystore = Keystore.fromSeed(seed, policyType, scriptType.getDefaultDerivation());
+            keystore.setLabel("Keystore " + (i + 1));
+            wallet.getKeystores().add(keystore);
+        }
+
+        wallet.setDefaultPolicy(Policy.getPolicy(policyType, scriptType, wallet.getKeystores(), keystoreCount > 1 ? 2 : null));
+        wallet.setStoredBlockHeight(800006);
+        wallet.getNode(KeyPurpose.RECEIVE).fillToIndex(0);
+
+        return wallet;
+    }
+
+    private static Transaction getWalletTransactionBody(Wallet wallet, Sha256Hash txid) {
+        BlockTransaction blockTransaction = wallet.getWalletTransaction(txid);
+        return blockTransaction == null ? null : blockTransaction.getTransaction();
     }
 }
