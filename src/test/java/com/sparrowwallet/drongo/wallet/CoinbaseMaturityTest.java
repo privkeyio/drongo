@@ -35,7 +35,7 @@ public class CoinbaseMaturityTest {
         Assertions.assertEquals(6480, Network.MAINNET.getCoinbaseMaturity(979918), "mainnet, mined before 979919");
         Assertions.assertEquals(25920, Network.MAINNET.getCoinbaseMaturity(979919), "mainnet, mined at 979919");
         Assertions.assertEquals(25920, Network.MAINNET.getCoinbaseMaturity(979920), "mainnet, mined after 979919");
-        Assertions.assertEquals(6705, Network.TESTNET4.getCoinbaseMaturity(TIP), "testnet4, 151406 to 158111");
+        Assertions.assertEquals(3395, Network.TESTNET4.getCoinbaseMaturity(TIP), "testnet4, 151406 to 154801");
 
         //Carrying no schedule, these keep the hundred the protocol has always asked for
         Assertions.assertEquals(100, Network.REGTEST.getCoinbaseMaturity(TIP), "regtest carries no schedule");

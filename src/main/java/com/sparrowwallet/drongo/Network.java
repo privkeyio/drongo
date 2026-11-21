@@ -141,7 +141,7 @@ public enum Network {
     public int getCoinbaseMaturity(int height) {
         return switch(this) {
             case MAINNET -> height >= 979919 ? 25920 : 6480;
-            case TESTNET4 -> 6705;      //151406 to 158111
+            case TESTNET4 -> 3395;      //151406 to 154801
             default -> 100;             //no schedule, so the original depth stands
         };
     }
