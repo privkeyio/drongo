@@ -769,6 +769,9 @@ public class PSBT {
             if(sigHash != null && sigHash != SigHash.ALL && sigHash != SigHash.DEFAULT) {
                 throw new PSBTProofException("Silent payment outputs require SIGHASH_ALL signatures only. Input at index " + input.getIndex() + " has sighash type: " + sigHash);
             }
+            if(input.getUtxo() != null && SilentPaymentUtils.isInvalidSegwitOutput(input.getUtxo().getScript())) {
+                throw new PSBTProofException("Silent payment outputs cannot be paid by a transaction spending a segwit version 2 or higher output. Input at index " + input.getIndex() + " spends one");
+            }
         }
 
         Set<HashIndex> outpoints = getPsbtInputs().stream()

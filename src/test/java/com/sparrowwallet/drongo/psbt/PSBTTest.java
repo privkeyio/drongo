@@ -1136,6 +1136,54 @@ public class PSBTTest {
     }
 
     @Test
+    public void invalidSpOutputsNotSortedBySpendKey() throws PSBTParseException {
+        //BIP375 v1.1.1 vector "output scripts: two sp outputs (same scan / different spend keys) not sorted lexicographically by spend key"
+        String psbt = "cHNidP8B+wQCAAAAAQIEAgAAAAEEAQEBBQECAQYBAAABDiAYpxdmOwurFLEqGncTI/8eQHndUy5d0T4o6hCBxwCYSgEPBAAAAAABAR+ghgEAAAAAABYAFCKactNKZFvTSWu79Qu7gckGP0+UIgICyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL9HMEQCID9iBcRocGpGJF8XE6u4uLmjp7/YOsdF98ByDUQxtM38AiBxWKv7gg8r9a1nRfVvwHCcmVzMrP4XCY2KobYfjJ/y/wEBAwQBAAAAIgYCyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL8IAAAAgAAAAAABEAT+////Ih0Cekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GghA+yk/xG3KOLg9gzmIilDpv9VudlfYnv5qZ0IS8hy1QpbIh4Cekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GhAihOzmFVF9yvW6JcUrrkJs+NUqEKpu4tWzQ7e0h34oZlZizEiikngvX6VzhBT98WyistUOmhwdgDjzomCLuMgIQABAwiQXwEAAAAAAAEEIlEgdUe4Fj1bvFSYQL5MwUaq0JUgc2e565RwbeZwjUCPk/kBCUICekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GgCi4D5lDNIleEbx2x1q254/iwluzMvIXshHEAXvx9nfYYAAQMIECcAAAAAAAABBCJRIGziw1OV8XDyS20tgNCkDEb0a6S0hD9qsxGpNLMcXYTcAQlCAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoA6r4Yq7amM+SU5r33DN10dpfsGsSHvCh8DGp9zgv1T27AA==";
+        PSBTProofException exception = Assertions.assertThrows(PSBTProofException.class, () -> validateVectorSilentPayments(psbt));
+        Assertions.assertTrue(exception.getMessage().contains("address mismatch"));
+    }
+
+    @Test
+    public void invalidKValuesAssignedToWrongOutputs() throws PSBTParseException {
+        //BIP375 v1.1.1 vector "output scripts: k values assigned to wrong output indices with three sp outputs (same scan / spend keys)"
+        String psbt = "cHNidP8B+wQCAAAAAQIEAgAAAAEEAQEBBQEDAQYBAAABDiAYpxdmOwurFLEqGncTI/8eQHndUy5d0T4o6hCBxwCYSgEPBAAAAAABAR+ghgEAAAAAABYAFCKactNKZFvTSWu79Qu7gckGP0+UIgICyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL9HMEQCIFg36hg2U7tRrGNQq+bDhHvokGogZdwwSNbSCOp8DkyCAiAQ+0/6sv7Vqmy2KAqTxHnPsE5Gyp7fF6owXNFnSiQsSQEBAwQBAAAAIgYCyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL8IAAAAgAAAAAABEAT+////Ih0Cekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GghA+yk/xG3KOLg9gzmIilDpv9VudlfYnv5qZ0IS8hy1QpbIh4Cekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GhAihOzmFVF9yvW6JcUrrkJs+NUqEKpu4tWzQ7e0h34oZlZizEiikngvX6VzhBT98WyistUOmhwdgDjzomCLuMgIQABAwiQXwEAAAAAAAEEIlEgMm31D+Cge3rLcgcL6ztjLrmtFbppXMHlqmqgB7YUb9gBCUICekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GgDYeGx6d5eQssgB/fKVLng1X7ROTj61W0/GeV1E6j84DkAAQMIECcAAAAAAAABBCJRIJcUQsifBHhuCCcorhFu6rgC8/qelf2w03U6aEAgIAbeAQlCAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoA2HhseneXkLLIAf3ylS54NV+0Tk4+tVtPxnldROo/OA5AAEDCBAnAAAAAAAAAQQiUSA/y66kkIf44D2d79Ory9bejAMrWD+Fpl0FeIHExEPNwAEJQgJ6SH/Bn7dph3uHQtbqGBGPPE5yseqMbeYCp61KQdvgaANh4bHp3l5CyyAH98pUueDVftE5OPrVbT8Z5XUTqPzgOQA=";
+        PSBTProofException exception = Assertions.assertThrows(PSBTProofException.class, () -> validateVectorSilentPayments(psbt));
+        Assertions.assertTrue(exception.getMessage().contains("address mismatch"));
+    }
+
+    @Test
+    public void validDistinctKValuesSameScanKey() throws PSBTParseException {
+        //BIP375 v1.1.1 vector "can finalize: three sp outputs (same scan key) - each output has distinct k value"
+        String psbt = "cHNidP8B+wQCAAAAAQIEAgAAAAEEAQEBBQEEAQYBAAABDiAYpxdmOwurFLEqGncTI/8eQHndUy5d0T4o6hCBxwCYSgEPBAAAAAABAR+AGgYAAAAAABYAFCKactNKZFvTSWu79Qu7gckGP0+UIgICyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL9HMEQCIA3+9XB4r8pV2yK0ze42yxF/h2HkeAgptCHRBkisr62PAiBk5vWJD0/QW3emSnGDHJiGTZyYTJ7x/r6afFC08VkHIQEBAwQBAAAAIgYCyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL8IAAAAgAAAAAABEAT+////Ih0Cekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GghA+yk/xG3KOLg9gzmIilDpv9VudlfYnv5qZ0IS8hy1QpbIh4Cekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GhAihOzmFVF9yvW6JcUrrkJs+NUqEKpu4tWzQ7e0h34oZlZizEiikngvX6VzhBT98WyistUOmhwdgDjzomCLuMgIQABAwighgEAAAAAAAEEIlEgMm31D+Cge3rLcgcL6ztjLrmtFbppXMHlqmqgB7YUb9gBCUICekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GgDYeGx6d5eQssgB/fKVLng1X7ROTj61W0/GeV1E6j84DkAAQMIoIYBAAAAAAABBCJRID/LrqSQh/jgPZ3v06vL1t6MAytYP4WmXQV4gcTEQ83AAQlCAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoA2HhseneXkLLIAf3ylS54NV+0Tk4+tVtPxnldROo/OA5AAEDCKCGAQAAAAAAAQQiUSCXFELInwR4bggnKK4Rbuq4AvP6npX9sNN1OmhAICAG3gEJQgJ6SH/Bn7dph3uHQtbqGBGPPE5yseqMbeYCp61KQdvgaANh4bHp3l5CyyAH98pUueDVftE5OPrVbT8Z5XUTqPzgOQABAwiQXwEAAAAAAAEEIlEgee9WiKP6f+/DkidFWx8cLwjHAIdCTWoA+EwxQhrKjaQA";
+        validateVectorSilentPayments(psbt);
+    }
+
+    @Test
+    public void validKValuesIndependentOfOutputIndex() throws PSBTParseException {
+        //BIP375 v1.1.1 vector "can finalize: three sp outputs (same scan key) / two regular outputs - k values assigned independently of output index"
+        String psbt = "cHNidP8B+wQCAAAAAQIEAgAAAAEEAQEBBQEGAQYBAAABDiAYpxdmOwurFLEqGncTI/8eQHndUy5d0T4o6hCBxwCYSgEPBAAAAAABAR8goQcAAAAAABYAFCKactNKZFvTSWu79Qu7gckGP0+UIgICyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL9IMEUCIQD333KAYwDd2+SyTNcz9TsypkayNsKUYFfeR65QOyqxaAIgTGlAW3e+2vOyB+3ll0m7o9VMRhWoi7025Ugkr3fJ5zEBAQMEAQAAACIGAsgXu3Uhr8NeqW87+ycObrUN3/pVYGJ7lh/sAPKZZQi/CAAAAIAAAAAAARAE/v///yIdAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoIQPspP8Rtyji4PYM5iIpQ6b/VbnZX2J7+amdCEvIctUKWyIeAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoQIoTs5hVRfcr1uiXFK65CbPjVKhCqbuLVs0O3tId+KGZWYsxIopJ4L1+lc4QU/fFsorLVDpocHYA486Jgi7jICEAAQMIoIYBAAAAAAABBCJRIDJt9Q/goHt6y3IHC+s7Yy65rRW6aVzB5apqoAe2FG/YAQlCAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoA2HhseneXkLLIAf3ylS54NV+0Tk4+tVtPxnldROo/OA5AAEDCFDDAAAAAAAAAQQiUSCcaj0jgY6CDtHQz965Y2V8jsMne32bhlx411V/Xe3WogABAwighgEAAAAAAAEEIlEgP8uupJCH+OA9ne/Tq8vW3owDK1g/haZdBXiBxMRDzcABCUICekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GgDYeGx6d5eQssgB/fKVLng1X7ROTj61W0/GeV1E6j84DkAAQMIUMMAAAAAAAABBCJRIHnvVoij+n/vw5InRVsfHC8IxwCHQk1qAPhMMUIayo2kAAEDCKCGAQAAAAAAAQQiUSCXFELInwR4bggnKK4Rbuq4AvP6npX9sNN1OmhAICAG3gEJQgJ6SH/Bn7dph3uHQtbqGBGPPE5yseqMbeYCp61KQdvgaANh4bHp3l5CyyAH98pUueDVftE5OPrVbT8Z5XUTqPzgOQABAwjILAEAAAAAAAEEIlEgb8UG+AUqn1qKqbmQ1emU9JXd7W1HusRMqs2t2NiZHNAA";
+        validateVectorSilentPayments(psbt);
+    }
+
+    @Test
+    public void invalidSegwitV2InputViaNonWitnessUtxo() throws PSBTParseException {
+        //BIP375 v1.1.1 vector "can finalize: three sp outputs (same scan key) - each output has distinct k value" with the segwit v2 input from vector
+        //"input eligibility: segwit version greater than 1 supplied via PSBT_IN_NON_WITNESS_UTXO with sp output" added after it. The added outpoint sorts
+        //after the original, so the input hash, ECDH share and output scripts of the original vector remain valid
+        String psbt = "cHNidP8B+wQCAAAAAQIEAgAAAAEEAQIBBQEEAQYBAAABDiAYpxdmOwurFLEqGncTI/8eQHndUy5d0T4o6hCBxwCYSgEPBAAAAAABAR+AGgYAAAAAABYAFCKactNKZFvTSWu79Qu7gckGP0+UIgICyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL9HMEQCIA3+9XB4r8pV2yK0ze42yxF/h2HkeAgptCHRBkisr62PAiBk5vWJD0/QW3emSnGDHJiGTZyYTJ7x/r6afFC08VkHIQEBAwQBAAAAIgYCyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL8IAAAAgAAAAAABEAT+////Ih0Cekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GghA+yk/xG3KOLg9gzmIilDpv9VudlfYnv5qZ0IS8hy1QpbIh4Cekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GhAihOzmFVF9yvW6JcUrrkJs+NUqEKpu4tWzQ7e0h34oZlZizEiikngvX6VzhBT98WyistUOmhwdgDjzomCLuMgIQABDiDJcwwbkl87iv+6mh+VHww4gI7IlcsXC2fRZkcbayYwlgEPBAAAAAABAwQBAAAAIgYCyBe7dSGvw16pbzv7Jw5utQ3f+lVgYnuWH+wA8pllCL8IAAAAgAAAAAABEAT+////AQBSAgAAAAH0whLVrtHn9v9jPyzgnGR8V77dkwMU2Y3ndQPVjpQLMwAAAAAA/////wGghgEAAAAAABZSFCKactNKZFvTSWu79Qu7gckGP0+UAAAAAAABAwighgEAAAAAAAEEIlEgMm31D+Cge3rLcgcL6ztjLrmtFbppXMHlqmqgB7YUb9gBCUICekh/wZ+3aYd7h0LW6hgRjzxOcrHqjG3mAqetSkHb4GgDYeGx6d5eQssgB/fKVLng1X7ROTj61W0/GeV1E6j84DkAAQMIoIYBAAAAAAABBCJRID/LrqSQh/jgPZ3v06vL1t6MAytYP4WmXQV4gcTEQ83AAQlCAnpIf8Gft2mHe4dC1uoYEY88TnKx6oxt5gKnrUpB2+BoA2HhseneXkLLIAf3ylS54NV+0Tk4+tVtPxnldROo/OA5AAEDCKCGAQAAAAAAAQQiUSCXFELInwR4bggnKK4Rbuq4AvP6npX9sNN1OmhAICAG3gEJQgJ6SH/Bn7dph3uHQtbqGBGPPE5yseqMbeYCp61KQdvgaANh4bHp3l5CyyAH98pUueDVftE5OPrVbT8Z5XUTqPzgOQABAwiQXwEAAAAAAAEEIlEgee9WiKP6f+/DkidFWx8cLwjHAIdCTWoA+EwxQhrKjaQA";
+        PSBTProofException exception = Assertions.assertThrows(PSBTProofException.class, () -> validateVectorSilentPayments(psbt));
+        Assertions.assertTrue(exception.getMessage().contains("segwit version 2"));
+    }
+
+    private static void validateVectorSilentPayments(String psbt) throws PSBTParseException {
+        //The P2WPKH partial signatures in the BIP375 v1.1.1 vectors do not verify, so they are not checked on parsing
+        PSBT parsed = PSBT.fromString(psbt, false);
+        Map<TransactionInput, ECKey> inputPublicKeys = new LinkedHashMap<>();
+        inputPublicKeys.put(parsed.getTransaction().getInputs().getFirst(), ECKey.fromPublicOnly(Hex.decode("02c817bb7521afc35ea96f3bfb270e6eb50ddffa5560627b961fec00f2996508bf")));
+        parsed.validateSilentPayments(inputPublicKeys);
+    }
+
+    @Test
     public void testSpSpendFieldsRoundTrip() throws PSBTParseException {
         Transaction transaction = new Transaction();
         transaction.setVersion(2);

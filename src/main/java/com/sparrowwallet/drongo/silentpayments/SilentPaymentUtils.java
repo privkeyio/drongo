@@ -144,13 +144,17 @@ public class SilentPaymentUtils {
             if(scriptPubKey == null) {
                 throw new IllegalStateException("No scriptPubKey found for input " + input.getOutpoint().getHash() + ":" + input.getOutpoint().getIndex());
             }
-            byte[] program = scriptPubKey.getProgram();
-            if(program.length >= 4 && program.length <= 42 && program[0] >= ScriptOpCodes.OP_2 && program[0] <= ScriptOpCodes.OP_16 && program[1] + 2 == program.length) {
+            if(isInvalidSegwitOutput(scriptPubKey)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    public static boolean isInvalidSegwitOutput(Script scriptPubKey) {
+        byte[] program = scriptPubKey.getProgram();
+        return program.length >= 4 && program.length <= 42 && program[0] >= ScriptOpCodes.OP_2 && program[0] <= ScriptOpCodes.OP_16 && program[1] + 2 == program.length;
     }
 
     public static byte[] getTweak(Transaction tx, Map<HashIndex, Script> spentScriptPubKeys) {
