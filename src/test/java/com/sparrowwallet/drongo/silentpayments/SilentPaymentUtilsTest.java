@@ -666,6 +666,31 @@ public class SilentPaymentUtilsTest {
         Assertions.assertEquals("d291d339280e0c86e2c708a591f8e8e2f892d12a7cfe8510b667799b71131c86", Utils.bytesToHex(silentPayments.getLast().getAddress().getData()));
     }
 
+    @Test
+    public void testSendKMaxLimit() throws InvalidSilentPaymentException {
+        // BIP352 case 27: sending K_MAX+1 outputs to one recipient group must fail, while exactly K_MAX outputs is allowed
+        SilentPaymentAddress address = SilentPaymentAddress.from("sp1qqtnvg7hxjck9ag24naytgd7pjwsmevwh95ydwht58w3uh7uw0ta7kqmk4a3pm24z0yepw6aw27pku56md0hq5ace0l3p3jstkqaajwrsjqc5dde5");
+        ECKey summedPrivateKey = ECKey.fromPrivate(Utils.hexToBytes("0000000000000000000000000000000000000000000000000000000000001337"));
+        Set<HashIndex> outpoints = Set.of(new HashIndex(Sha256Hash.wrap("3cde0e7ad8adf24a4e52fd18efafffb94f73f4c7facf2627a5b588ad1c9db87f"), 0));
+
+        List<SilentPayment> silentPayments = new ArrayList<>();
+        for(int i = 0; i < SilentPaymentUtils.K_MAX; i++) {
+            silentPayments.add(new SilentPayment(address, null, 1000, false));
+        }
+
+        SilentPaymentUtils.computeOutputAddresses(silentPayments, summedPrivateKey, outpoints);
+        Assertions.assertTrue(silentPayments.stream().allMatch(SilentPayment::isAddressComputed));
+
+        silentPayments.add(new SilentPayment(address, null, 1000, false));
+        InvalidSilentPaymentException computeException = Assertions.assertThrows(InvalidSilentPaymentException.class,
+                () -> SilentPaymentUtils.computeOutputAddresses(silentPayments, summedPrivateKey, outpoints));
+        Assertions.assertTrue(computeException.getMessage().contains(String.valueOf(SilentPaymentUtils.K_MAX)));
+
+        ECKey ecdhShare = address.getScanKey().multiply(summedPrivateKey.getPrivKey(), true);
+        ECKey summedPublicKey = ECKey.fromPublicOnly(summedPrivateKey);
+        Assertions.assertThrows(InvalidSilentPaymentException.class, () -> SilentPaymentUtils.validateOutputAddresses(silentPayments, ecdhShare, summedPublicKey, outpoints));
+    }
+
     // BIP352 key sum tests.
 
     @Test

@@ -274,12 +274,19 @@ public class SilentPaymentUtils {
         }
     }
 
-    public static Map<ECKey, List<SilentPayment>> getScanKeyGroups(List<SilentPayment> silentPayments) {
+    public static Map<ECKey, List<SilentPayment>> getScanKeyGroups(List<SilentPayment> silentPayments) throws InvalidSilentPaymentException {
         Map<ECKey, List<SilentPayment>> scanKeyGroups = new LinkedHashMap<>();
         for(SilentPayment silentPayment : silentPayments) {
             SilentPaymentAddress address = silentPayment.getSilentPaymentAddress();
             List<SilentPayment> scanKeyGroup = scanKeyGroups.computeIfAbsent(address.getScanKey(), _ -> new ArrayList<>());
             scanKeyGroup.add(silentPayment);
+        }
+
+        //BIP352 receivers stop scanning after K_MAX outputs for a scan key, so any further outputs could never be found
+        for(List<SilentPayment> scanKeyGroup : scanKeyGroups.values()) {
+            if(scanKeyGroup.size() > K_MAX) {
+                throw new InvalidSilentPaymentException("Cannot send more than " + K_MAX + " silent payment outputs to the same scan key");
+            }
         }
 
         //BIP375 assigns k by ascending silent payment code, with outputs sharing a code ordered by output index, which the stable sort preserves
