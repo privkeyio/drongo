@@ -1460,7 +1460,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         return allInputsFromWallet(allTransactions, allTxos, txId);
     }
 
-    private boolean allInputsFromWallet(Map<Sha256Hash, BlockTransaction> walletTransactions, Map<BlockTransactionHashIndex, WalletNode> walletTxos, Sha256Hash txId) {
+    public boolean allInputsFromWallet(Map<Sha256Hash, BlockTransaction> walletTransactions, Map<BlockTransactionHashIndex, WalletNode> walletTxos, Sha256Hash txId) {
         BlockTransaction utxoBlkTx = walletTransactions.get(txId);
         if(utxoBlkTx == null) {
             //Provided txId was not a wallet transaction
@@ -1984,25 +1984,13 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
     }
 
     public void sign(PSBT psbt) throws MnemonicException {
-        if(psbt.getPsbtOutputs().stream().anyMatch(o -> o.getSilentPaymentAddress() != null)) {
-            List<PSBTInput> psbtInputs = psbt.getPsbtInputs();
-            for(int i = 0; i < psbtInputs.size(); i++) {
-                //Compare the base type: the unified opt-in commits to every input and every output, which
-                //is the property silent payments require, so it is as acceptable here as SIGHASH_ALL.
-                SigHash inputSigHash = psbtInputs.get(i).getSigHash();
-                if(inputSigHash != null) {
-                    inputSigHash = inputSigHash.withoutUnified();
-                }
-                if(inputSigHash != null && inputSigHash != SigHash.ALL && inputSigHash != SigHash.DEFAULT) {
-                    throw new IllegalStateException("Silent payment outputs require SIGHASH_ALL/DEFAULT signatures. Input at index " + i + " has sighash type: " + inputSigHash);
-                }
-            }
-        }
-
         sign(getSigningNodes(psbt));
     }
 
     public void sign(Map<PSBTInput, WalletNode> signingNodes) throws MnemonicException {
+        //Every input is checked before any is signed, so a refused PSBT is not left partly signed
+        signingNodes.keySet().forEach(PSBTInput::verifySilentPaymentSigHash);
+
         for(Map.Entry<PSBTInput, WalletNode> signingEntry : signingNodes.entrySet()) {
             Wallet signingWallet = signingEntry.getValue().getWallet();
             for(Keystore keystore : signingWallet.getKeystores()) {
@@ -2393,6 +2381,9 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
     public void clearNodes(Wallet previousWallet) {
         detachedLabels.putAll(previousWallet.getDetachedLabels(true));
+        //This wallet may be a copy taken before the previous wallet last recorded or cleared a silent payment address
+        silentPaymentAddresses.clear();
+        silentPaymentAddresses.putAll(previousWallet.silentPaymentAddresses);
         purposeNodes.clear();
         transactions.clear();
         storedBlockHeight = 0;

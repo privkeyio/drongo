@@ -4,6 +4,7 @@ import com.sparrowwallet.drongo.Utils;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.*;
+import com.sparrowwallet.drongo.silentpayments.SilentPaymentAddress;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -154,6 +155,28 @@ public class UnifiedSigHashSafetyTest {
         for(SigHash sigHash : List.of(SigHash.NONE, SigHash.UNIFIED_NONE, SigHash.SINGLE, SigHash.UNIFIED_SINGLE)) {
             Assertions.assertNotEquals(SigHash.ALL, sigHash.withoutUnified(),
                     sigHash + " must not reduce to ALL");
+        }
+    }
+
+    @Test
+    public void testSilentPaymentGateAcceptsTheOptIn() throws Exception {
+        Script spk = ScriptType.P2WPKH.getOutputScript(PolicyType.SINGLE_HD, KEY);
+        Transaction transaction = new Transaction();
+        transaction.setVersion(2);
+        transaction.addInput(Sha256Hash.wrap(Utils.hexToBytes("aa".repeat(32))), 0, new Script(new byte[0]));
+        transaction.addOutput(90000L, spk);
+
+        PSBT psbt = new PSBT(transaction);
+        psbt.getPsbtOutputs().getFirst().setSilentPaymentAddress(SilentPaymentAddress.from("sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"));
+        PSBTInput psbtInput = psbt.getPsbtInputs().getFirst();
+        psbtInput.setWitnessUtxo(new TransactionOutput(null, 100000L, spk.getProgram()));
+
+        psbtInput.setSigHash(SigHash.UNIFIED_ALL);
+        Assertions.assertDoesNotThrow(psbtInput::verifySilentPaymentSigHash);
+
+        for(SigHash sigHash : List.of(SigHash.UNIFIED_NONE, SigHash.UNIFIED_SINGLE, SigHash.NONE)) {
+            psbtInput.setSigHash(sigHash);
+            Assertions.assertThrows(IllegalStateException.class, psbtInput::verifySilentPaymentSigHash, sigHash.toString());
         }
     }
 

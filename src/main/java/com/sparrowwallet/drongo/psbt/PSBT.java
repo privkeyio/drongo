@@ -767,13 +767,16 @@ public class PSBT {
         }
 
         for(PSBTInput input : getPsbtInputs()) {
-            //As in Wallet.sign, the unified opt-in is compared by its base type
+            //As in PSBTInput.verifySilentPaymentSigHash, the unified opt-in is compared by its base type
             SigHash sigHash = input.getSigHash();
             if(sigHash != null) {
                 sigHash = sigHash.withoutUnified();
             }
             if(sigHash != null && sigHash != SigHash.ALL && sigHash != SigHash.DEFAULT) {
                 throw new PSBTProofException("Silent payment outputs require SIGHASH_ALL signatures only. Input at index " + input.getIndex() + " has sighash type: " + sigHash);
+            }
+            if(input.getUtxo() != null && SilentPaymentUtils.isInvalidSegwitOutput(input.getUtxo().getScript())) {
+                throw new PSBTProofException("Silent payment outputs cannot be paid by a transaction spending a segwit version 2 or higher output. Input at index " + input.getIndex() + " spends one");
             }
         }
 
@@ -1258,6 +1261,8 @@ public class PSBT {
             psbtOutput.setSilentPaymentAddress(null);
             psbtOutput.setSilentPaymentLabel(null);
             psbtOutput.setDnssecProof(null);
+            psbtOutput.setRedeemScript(null);
+            psbtOutput.setWitnessScript(null);
         }
 
         return publicCopy;
