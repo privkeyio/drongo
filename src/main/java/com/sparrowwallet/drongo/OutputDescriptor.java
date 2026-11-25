@@ -33,6 +33,12 @@ public class OutputDescriptor {
     private static final Pattern MULTIPATH_PATTERN = Pattern.compile("<([\\d*'hH;]+)>");
     private static final Pattern CHECKSUM_PATTERN = Pattern.compile("#([" + CHECKSUM_CHARSET + "]{8})$");
     private static final Pattern ANNOTATION_PATTERN = Pattern.compile("([a-zA-Z]+)=([0-9]+)");
+    private static final String KEY_EXPRESSION = "\\s*(?:\\[[A-Fa-f0-9]{8}[/\\d'hH]*\\])?[1-9A-HJ-NP-Za-km-z]{100,115}(?:/[/\\d*'hH<>;]+)?";
+    private static final Pattern WRAPPER_PATTERN = Pattern.compile("\\s*(?:sh|wsh|wpkh|pkh|pk|tr)\\s*\\(", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MULTI_OPEN_PATTERN = Pattern.compile("\\s*(?:sorted)?multi\\s*\\(\\s*\\d+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern KEY_EXPRESSION_PATTERN = Pattern.compile(KEY_EXPRESSION);
+    private static final Pattern MULTI_KEY_PATTERN = Pattern.compile("\\s*," + KEY_EXPRESSION);
+    private static final Pattern CLOSE_PATTERN = Pattern.compile("\\s*\\)");
 
     private static final int THRESHOLD_ABSENT = -1;
 
@@ -240,6 +246,33 @@ public class OutputDescriptor {
         return false;
     }
 
+    /**
+     * Whether every key derives its addresses on the standard receive and change chains, and all keys on the same one, as a wallet created from this
+     * descriptor does. A key without a child derivation is taken to be an account level key, as when the descriptor is converted to a wallet.
+     */
+    public boolean hasStandardChildDerivations() {
+        Set<String> chains = new HashSet<>();
+        for(ExtendedKey pubKey : extendedPublicKeys.keySet()) {
+            String childDerivationPath = mapChildrenDerivations.get(pubKey);
+            if(childDerivationPath == null || childDerivationPath.equals("/0/*") || childDerivationPath.equals("/<0;1>/*")) {
+                chains.add("/0/*");
+            } else if(childDerivationPath.equals("/1/*")) {
+                chains.add("/1/*");
+            } else {
+                return false;
+            }
+        }
+
+        return chains.size() <= 1;
+    }
+
+    public void verifyStandardChildDerivations() {
+        if(!hasStandardChildDerivations()) {
+            throw new IllegalStateException("The descriptor does not derive its addresses on the standard receive and change chains (/0/*, /1/* or /<0;1>/*), "
+                    + "so a wallet created from it would not have the same addresses.");
+        }
+    }
+
     public List<ChildNumber> getChildDerivation() {
         List<ChildNumber> lastDerivation = null;
         for(ExtendedKey pubKey : extendedPublicKeys.keySet()) {
@@ -334,14 +367,9 @@ public class OutputDescriptor {
             if(extendedMasterPrivateKeys.containsKey(xpub)) {
                 ExtendedKey xprv = extendedMasterPrivateKeys.get(xpub);
                 MasterPrivateExtendedKey masterPrivateExtendedKey = new MasterPrivateExtendedKey(xprv.getKey().getPrivKeyBytes(), xprv.getKey().getChainCode());
-                String childDerivation = mapChildrenDerivations.get(xpub) == null ? scriptType.getDefaultDerivationPath() : mapChildrenDerivations.get(xpub);
-                if(childDerivation.endsWith("/<0;1>/*")) {
-                    childDerivation = childDerivation.substring(0, childDerivation.length() - 8);
-                } else if(childDerivation.endsWith("/0/*") || childDerivation.endsWith("/1/*")) {
-                    childDerivation = childDerivation.substring(0, childDerivation.length() - 4);
-                }
+                List<ChildNumber> derivation = mapChildrenDerivations.get(xpub) == null ? scriptType.getDefaultDerivation() : extKeyEntry.getValue().getDerivation();
                 try {
-                    keystore = Keystore.fromMasterPrivateExtendedKey(masterPrivateExtendedKey, wallet.getPolicyType(), KeyDerivation.parsePath(childDerivation));
+                    keystore = Keystore.fromMasterPrivateExtendedKey(masterPrivateExtendedKey, wallet.getPolicyType(), derivation);
                 } catch(MnemonicException e) {
                     throw new RuntimeException(e);
                 }
@@ -541,7 +569,7 @@ public class OutputDescriptor {
         }
 
         if(scriptType == null) {
-            throw new IllegalArgumentException("Cannot determine script type from descriptor: " + descriptor);
+            throw new IllegalArgumentException("Cannot determine script type from descriptor");
         }
 
         int threshold = getMultisigThreshold(descriptor);
@@ -575,11 +603,15 @@ public class OutputDescriptor {
             String childDerivationPath = matcher.group(3);
             try {
                 ExtendedKey extendedKey = ExtendedKey.fromDescriptor(extKey);
+                ExtendedKey masterPrivateKey = extendedKey.getKey().hasPrivKey() && keyDerivation.getDerivation().isEmpty() ? extendedKey : null;
                 if(childDerivationPath != null) {
                     try {
                         List<ChildNumber> childPath = KeyDerivation.parsePath(childDerivationPath.replace("<0;1>", "0"));
-                        if(childPath.size() > 2 && (extendedKey.getKey().hasPrivKey() || childPath.stream().noneMatch(ChildNumber::isHardened))) {
-                            childDerivationPath = childDerivationPath.substring(childDerivationPath.lastIndexOf("/", childDerivationPath.lastIndexOf("/") - 1));
+                        int chainIndex = childDerivationPath.lastIndexOf("/", childDerivationPath.lastIndexOf("/") - 1);
+                        //Only a single path above the chain can be folded into the key, as the key cannot hold both branches of a multipath element
+                        if(childPath.size() > 2 && !childDerivationPath.substring(0, Math.max(chainIndex, 0)).contains("<")
+                                && (extendedKey.getKey().hasPrivKey() || childPath.stream().noneMatch(ChildNumber::isHardened))) {
+                            childDerivationPath = childDerivationPath.substring(chainIndex);
                             childPath = childPath.subList(0, childPath.size() - 2);
                             if(keyDerivation.getMasterFingerprint() == null) {
                                 keyDerivation = new KeyDerivation(Utils.bytesToHex(extendedKey.getKey().getFingerprint()), keyDerivation.getDerivationPath());
@@ -595,16 +627,14 @@ public class OutputDescriptor {
                     }
                 }
                 if(extendedKey.getKey().hasPrivKey()) {
-                    ExtendedKey privateExtendedKey = extendedKey;
                     List<ChildNumber> derivation = keyDerivation.getDerivation();
                     int depth = derivation.isEmpty() ? scriptType.getDefaultDerivation().size() : derivation.size();
                     DeterministicKey prvKey = extendedKey.getKey();
                     DeterministicKey pubKey = new DeterministicKey(List.of(prvKey.getPath().getLast()), prvKey.getChainCode(), prvKey.getPubKey(), depth, extendedKey.getParentFingerprint());
                     extendedKey = new ExtendedKey(pubKey, pubKey.getParentFingerprint(), extendedKey.getKeyChildNumber());
-
-                    if(derivation.isEmpty()) {
-                        masterPrivateKeyMap.put(extendedKey, privateExtendedKey);
-                    }
+                }
+                if(masterPrivateKey != null) {
+                    masterPrivateKeyMap.put(extendedKey, masterPrivateKey);
                 }
                 keyDerivationMap.put(extendedKey, keyDerivation);
                 keyChildDerivationMap.put(extendedKey, childDerivationPath);
@@ -632,7 +662,70 @@ public class OutputDescriptor {
             throw new IllegalArgumentException("Invalid multisig threshold of " + multisigThreshold + " in a descriptor providing " + keyDerivationMap.size() + " key" + (keyDerivationMap.size() == 1 ? "" : "s"));
         }
 
+        int keyCount = getKeyExpressionCount(scriptType, descriptor);
+        if(keyCount != keyDerivationMap.size()) {
+            throw new IllegalArgumentException("Descriptor contains " + keyCount + " keys, but only " + keyDerivationMap.size() + " distinct extended public keys");
+        }
+
         return new OutputDescriptor(scriptType, Math.max(multisigThreshold, 1), keyDerivationMap, keyChildDerivationMap, mapExtendedPublicKeyLabels, masterPrivateKeyMap, annotations);
+    }
+
+    private static int getKeyExpressionCount(ScriptType scriptType, String descriptor) {
+        StringBuilder wrappers = new StringBuilder();
+        int position = 0;
+        Matcher matcher = WRAPPER_PATTERN.matcher(descriptor);
+        while(matcher.region(position, descriptor.length()).lookingAt()) {
+            wrappers.append(matcher.group().replaceAll("\\s", "").toLowerCase(Locale.ROOT));
+            position = matcher.end();
+        }
+
+        String expectedWrappers = ScriptType.fromDescriptor(descriptor) == null || scriptType == ScriptType.MULTISIG ? "" : scriptType.getDescriptor();
+        if(!wrappers.toString().equals(expectedWrappers)) {
+            throw new IllegalArgumentException("Unsupported descriptor script expression");
+        }
+
+        int keyCount = 0;
+        Matcher multiMatcher = MULTI_OPEN_PATTERN.matcher(descriptor);
+        Matcher keyMatcher = KEY_EXPRESSION_PATTERN.matcher(descriptor);
+        Matcher closeMatcher = CLOSE_PATTERN.matcher(descriptor);
+        if(multiMatcher.region(position, descriptor.length()).lookingAt()) {
+            position = multiMatcher.end();
+            Matcher multiKeyMatcher = MULTI_KEY_PATTERN.matcher(descriptor);
+            while(multiKeyMatcher.region(position, descriptor.length()).lookingAt()) {
+                keyCount++;
+                position = multiKeyMatcher.end();
+            }
+            if(!closeMatcher.region(position, descriptor.length()).lookingAt()) {
+                throw getUnsupportedKeyException(descriptor);
+            }
+            position = closeMatcher.end();
+        } else if(keyMatcher.region(position, descriptor.length()).lookingAt()) {
+            keyCount = 1;
+            position = keyMatcher.end();
+        } else {
+            throw getUnsupportedKeyException(descriptor);
+        }
+
+        for(int i = 0; i < wrappers.chars().filter(c -> c == '(').count(); i++) {
+            if(!closeMatcher.region(position, descriptor.length()).lookingAt()) {
+                throw new IllegalArgumentException("Descriptor is missing a closing parenthesis");
+            }
+            position = closeMatcher.end();
+        }
+
+        if(!descriptor.substring(position).isBlank()) {
+            throw new IllegalArgumentException("Unexpected text after the end of the descriptor");
+        }
+
+        return keyCount;
+    }
+
+    private static IllegalArgumentException getUnsupportedKeyException(String descriptor) {
+        if(PUBKEY_PATTERN.matcher(descriptor).find()) {
+            return new IllegalArgumentException("Descriptors with single public keys are not supported - use descriptors with xpubs");
+        }
+
+        return new IllegalArgumentException("Only single key and multisig descriptors are supported");
     }
 
     public static boolean isSilentPaymentDescriptor(String descriptor) {
@@ -689,7 +782,7 @@ public class OutputDescriptor {
         String scanHrp = Network.get().getSilentPaymentsScanKeyHrp();
         String spendHrp = Network.get().getSilentPaymentsSpendKeyHrp();
         if(!lowerArg.startsWith(scanHrp + "1") && !lowerArg.startsWith(spendHrp + "1")) {
-            throw new IllegalArgumentException("Single argument sp() descriptor requires spscan or spspend encoded key, got: " + arg);
+            throw new IllegalArgumentException("Single argument sp() descriptor requires spscan or spspend encoded key");
         }
 
         SilentPaymentScanAddress spScanAddress = SilentPaymentScanAddress.fromKeyString(arg);
@@ -744,7 +837,7 @@ public class OutputDescriptor {
         try {
             dpk = DumpedPrivateKey.fromBase58(arg);
         } catch(Exception e) {
-            throw new IllegalArgumentException("Cannot parse sp() scan key as xprv or WIF: " + arg, e);
+            throw new IllegalArgumentException("Cannot parse sp() scan key as xprv or WIF", e);
         }
 
         ECKey key = dpk.getKey();
@@ -784,7 +877,7 @@ public class OutputDescriptor {
             return ECKey.fromPublicOnly(Utils.hexToBytes(pubKeyMatcher.group(2)));
         }
 
-        throw new IllegalArgumentException("Cannot parse sp() spend key as xpub, xprv, or compressed pubkey: " + arg);
+        throw new IllegalArgumentException("Cannot parse sp() spend key as xpub, xprv, or compressed pubkey");
     }
 
     private static Map<String, Integer> parseAnnotations(String annotationString) {
@@ -792,11 +885,13 @@ public class OutputDescriptor {
         String[] pairs = annotationString.split("&");
         for(String pair : pairs) {
             Matcher matcher = ANNOTATION_PATTERN.matcher(pair);
-            if(matcher.matches()) {
-                String key = matcher.group(1).toLowerCase(Locale.ROOT);
-                if(!annotations.containsKey(key)) {
-                    annotations.put(key, Integer.parseInt(matcher.group(2)));
-                }
+            if(!matcher.matches()) {
+                throw new IllegalArgumentException("Invalid descriptor annotation: " + pair);
+            }
+
+            String key = matcher.group(1).toLowerCase(Locale.ROOT);
+            if(!annotations.containsKey(key)) {
+                annotations.put(key, Integer.parseInt(matcher.group(2)));
             }
         }
 

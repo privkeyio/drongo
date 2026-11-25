@@ -57,6 +57,7 @@ public class PGPUtils {
             options.addVerificationCerts(appPgpPublicKeyRingCollection);
             if(detachedSignatureStream != null) {
                 options.addVerificationOfDetachedSignatures(detachedSignatureStream);
+                options.forceNonOpenPgpData();
             }
 
             DecryptionStream verificationStream = PGPainless.decryptAndOrVerify()

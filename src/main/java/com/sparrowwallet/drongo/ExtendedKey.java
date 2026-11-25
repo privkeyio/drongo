@@ -219,7 +219,7 @@ public class ExtendedKey {
 
         public static List<Header> getHeaders(Network network) {
             return Arrays.stream(Header.values())
-                    .filter(header -> header.getNetwork() == network || (header.getNetwork() == Network.TESTNET && network == Network.REGTEST) || (header.getNetwork() == Network.TESTNET && network == Network.SIGNET) || (header.getNetwork() == Network.TESTNET && network == Network.TESTNET4))
+                    .filter(header -> header.getNetwork() == network || (header.getNetwork() == Network.TESTNET && network == Network.REGTEST) || (header.getNetwork() == Network.TESTNET && network == Network.SIGNET) || (header.getNetwork() == Network.TESTNET && network == Network.TESTNET4) || (header.getNetwork() == Network.TESTNET && network == Network.TESTNET5))
                     .collect(Collectors.toList());
         }
 
@@ -238,7 +238,7 @@ public class ExtendedKey {
                 }
             }
 
-            throw new IllegalArgumentException("Unrecognised extended key header for " + Network.getCanonical().getName() + ": " + xkey);
+            throw new IllegalArgumentException("Unrecognised extended key header for " + Network.getCanonical().getName());
         }
 
         public static Header fromScriptType(ScriptType scriptType, boolean privateKey) {
