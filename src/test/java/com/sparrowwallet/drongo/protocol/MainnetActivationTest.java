@@ -34,6 +34,13 @@ public class MainnetActivationTest {
     //The target mainnet actually required at the activation height, read off the block itself
     private static final long SHIFTED_BITS = 0x1a008d4fL;
 
+    private static final long REGTEST_BITS = 0x207fffffL;
+
+    //Byte offsets in a v2 header: the 80 v1 bytes, then nonce2, nonce3, extranonce, time offset and tx count before the flags,
+    //and the mask clear bits and XOR key between the flags and the height
+    private static final int V2_FLAGS_OFFSET = 80 + 4 + 4 + 16 + 4 + 2;
+    private static final int V2_HEIGHT_OFFSET = V2_FLAGS_OFFSET + 1 + 1 + 16;
+
     @AfterEach
     public void tearDown() {
         Network.set(null);
@@ -111,6 +118,127 @@ public class MainnetActivationTest {
         HeaderChainState chainState = new HeaderChainState(ANCHOR_HEIGHT, Sha256Hash.wrap(ANCHOR_HASH), ANCHOR_BITS);
         VerificationException e = Assertions.assertThrows(VerificationException.class, () -> chainState.add(premature));
         Assertions.assertTrue(e.getMessage().contains("requires v1"), e.getMessage());
+    }
+
+    @Test
+    public void testTheRealActivationHeaderCarriesItsHeightAndNoReservedFlags() throws IOException {
+        BlockHeader activation = readHeaders().get(ACTIVATION_HEIGHT - FIRST_HEIGHT);
+        Assertions.assertEquals(ACTIVATION_HEIGHT, activation.getHeight());
+        Assertions.assertEquals(0, activation.getFlags() & BlockHeader.FLAGS_RESERVED_MASK);
+    }
+
+    @Test
+    public void testAHeaderCarryingTheWrongHeightIsRefused() throws IOException {
+        byte[] bytes = Utils.hexToBytes(readLines().get(ACTIVATION_HEIGHT - FIRST_HEIGHT));
+        Utils.uint32ToByteArrayLE(ACTIVATION_HEIGHT + 1, bytes, V2_HEIGHT_OFFSET);
+        BlockHeader header = new BlockHeader(bytes);
+        Assertions.assertEquals(ACTIVATION_HEIGHT + 1, header.getHeight());
+
+        VerificationException e = Assertions.assertThrows(VerificationException.class, () -> addAtActivation(header));
+        Assertions.assertTrue(e.getMessage().contains("carries height " + (ACTIVATION_HEIGHT + 1)), e.getMessage());
+    }
+
+    @Test
+    public void testAHeaderSettingEitherReservedFlagBitIsRefused() throws IOException {
+        for(int bit : new int[] {0x40, 0x80}) {
+            byte[] bytes = Utils.hexToBytes(readLines().get(ACTIVATION_HEIGHT - FIRST_HEIGHT));
+            bytes[V2_FLAGS_OFFSET] |= (byte)bit;
+            BlockHeader header = new BlockHeader(bytes);
+            Assertions.assertEquals(bit, header.getFlags() & bit);
+
+            VerificationException e = Assertions.assertThrows(VerificationException.class, () -> addAtActivation(header));
+            Assertions.assertTrue(e.getMessage().contains("reserved flag bits"), e.getMessage());
+        }
+    }
+
+    /** Knots leaves BLAKE2b unscheduled on testnet3 and signet, so a v2 header is never valid there. */
+    @Test
+    public void testABlake2bHeaderIsRefusedWhereNoScheduleExists() throws IOException {
+        for(Network network : new Network[] {Network.TESTNET, Network.SIGNET, Network.TESTNET5}) {
+            Network.set(network);
+            Assertions.assertNull(network.getBlake2bHeight());
+
+            byte[] bytes = Utils.hexToBytes(readLines().get(ACTIVATION_HEIGHT - FIRST_HEIGHT));
+            System.arraycopy(Sha256Hash.wrap(ANCHOR_HASH).getReversedBytes(), 0, bytes, 4, 32);
+            Utils.uint32ToByteArrayLE(ANCHOR_BITS, bytes, 72);
+            Utils.uint32ToByteArrayLE(ANCHOR_HEIGHT + 1, bytes, V2_HEIGHT_OFFSET);
+            BlockHeader header = new BlockHeader(bytes);
+
+            HeaderChainState chainState = new HeaderChainState(ANCHOR_HEIGHT, Sha256Hash.wrap(ANCHOR_HASH), ANCHOR_BITS);
+            VerificationException e = Assertions.assertThrows(VerificationException.class, () -> chainState.add(header));
+            Assertions.assertTrue(e.getMessage().contains("has no BLAKE2b schedule"), network + ": " + e.getMessage());
+        }
+    }
+
+    /** Regtest picks its own activation height, so its v2 headers are held only to the rules that need no schedule. */
+    @Test
+    public void testRegtestAcceptsTheRealChainAcrossActivation() throws IOException {
+        Network.set(Network.REGTEST);
+        List<BlockHeader> headers = readHeaders();
+
+        HeaderChainState chainState = new HeaderChainState(ANCHOR_HEIGHT, Sha256Hash.wrap(ANCHOR_HASH), ANCHOR_BITS);
+        for(BlockHeader header : headers) {
+            chainState.add(header);
+        }
+
+        Assertions.assertEquals(FIRST_HEIGHT + headers.size() - 1, chainState.getHeight());
+    }
+
+    /**
+     * Mined to regtest's proof of work limit, so each header below meets its proof of work and the v2 field rules are
+     * the only thing that can refuse it.
+     */
+    @Test
+    public void testMinedRegtestHeadersAreHeldToTheV2FieldRules() throws IOException {
+        Network.set(Network.REGTEST);
+
+        BlockHeader valid = mineAboveAnchor(ANCHOR_HEIGHT + 1, 0);
+        Assertions.assertTrue(valid.verifyProofOfWork());
+        newRegtestChain().add(valid);
+
+        BlockHeader wrongHeight = mineAboveAnchor(ANCHOR_HEIGHT + 2, 0);
+        Assertions.assertTrue(wrongHeight.verifyProofOfWork());
+        VerificationException e = Assertions.assertThrows(VerificationException.class, () -> newRegtestChain().add(wrongHeight));
+        Assertions.assertTrue(e.getMessage().contains("carries height " + (ANCHOR_HEIGHT + 2)), e.getMessage());
+
+        for(int bit : new int[] {0x40, 0x80}) {
+            BlockHeader reserved = mineAboveAnchor(ANCHOR_HEIGHT + 1, bit);
+            Assertions.assertTrue(reserved.verifyProofOfWork());
+            VerificationException f = Assertions.assertThrows(VerificationException.class, () -> newRegtestChain().add(reserved));
+            Assertions.assertTrue(f.getMessage().contains("reserved flag bits"), f.getMessage());
+        }
+    }
+
+    private static HeaderChainState newRegtestChain() {
+        return new HeaderChainState(ANCHOR_HEIGHT, Sha256Hash.wrap(ANCHOR_HASH), REGTEST_BITS);
+    }
+
+    private static BlockHeader mineAboveAnchor(int heightField, int setFlags) throws IOException {
+        byte[] bytes = Utils.hexToBytes(readLines().get(ACTIVATION_HEIGHT - FIRST_HEIGHT));
+        System.arraycopy(Sha256Hash.wrap(ANCHOR_HASH).getReversedBytes(), 0, bytes, 4, 32);
+        Utils.uint32ToByteArrayLE(REGTEST_BITS, bytes, 72);
+        Utils.uint32ToByteArrayLE(heightField, bytes, V2_HEIGHT_OFFSET);
+        bytes[V2_FLAGS_OFFSET] |= (byte)setFlags;
+        for(long nonce = 0; nonce < 1000; nonce++) {
+            Utils.uint32ToByteArrayLE(nonce, bytes, 76);
+            BlockHeader header = new BlockHeader(bytes);
+            if(header.verifyProofOfWork()) {
+                return header;
+            }
+        }
+
+        throw new AssertionError("no nonce met the regtest proof of work limit");
+    }
+
+    private static void addAtActivation(BlockHeader header) throws IOException {
+        Network.set(Network.MAINNET);
+        List<BlockHeader> headers = readHeaders();
+        HeaderChainState chainState = new HeaderChainState(ANCHOR_HEIGHT, Sha256Hash.wrap(ANCHOR_HASH), ANCHOR_BITS);
+        for(int i = 0; i < ACTIVATION_HEIGHT - FIRST_HEIGHT; i++) {
+            chainState.add(headers.get(i));
+        }
+
+        chainState.add(header);
     }
 
     private static List<BlockHeader> readHeaders() throws IOException {
