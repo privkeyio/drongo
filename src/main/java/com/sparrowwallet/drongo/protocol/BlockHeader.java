@@ -20,6 +20,9 @@ public class BlockHeader extends Message {
     /** When this flag is set, the time on the wire is the block time less the time offset. */
     public static final int FLAG_USE_TIME_OFFSET = 0x04;
 
+    /** The top two flag bits are reserved for future hardforks, and a header setting either is invalid. */
+    public static final int FLAGS_RESERVED_MASK = 0xc0;
+
     public static final int V1_LENGTH = 80;
     public static final int V2_LENGTH = 164;
 

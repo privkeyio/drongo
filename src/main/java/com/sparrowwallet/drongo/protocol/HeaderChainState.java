@@ -62,7 +62,9 @@ public class HeaderChainState {
             throw new VerificationException("Header at height " + (height + 1) + " has difficulty target " + Long.toHexString(header.getDifficultyTarget())
                     + " but the chain requires " + Long.toHexString(requiredBits));
         }
+        requireMinimumVersion(height + 1, header);
         requireExpectedHeaderVersion(height + 1, header);
+        requireValidHeaderV2Fields(height + 1, header);
         if(!header.verifyProofOfWork()) {
             throw new VerificationException("Header at height " + (height + 1) + " does not meet its required proof of work target");
         }
@@ -93,11 +95,15 @@ public class HeaderChainState {
      * the proof of work, since it decides which proof of work the header is claiming to have done.
      *
      * Refused in both directions. A v2 header below the height is no more the chain this follows than a v1 header
-     * above it. Networks with no schedule pin nothing and are left alone.
+     * above it. A network with no schedule has no height to require v2 from, and like Knots, refuses v2 headers outright.
+     * Regtest is the exception, since it picks its height through -testactivationheight and so has nothing to compare.
      */
     private static void requireExpectedHeaderVersion(int height, BlockHeader header) throws VerificationException {
         Integer activationHeight = Network.get().getBlake2bHeight();
         if(activationHeight == null) {
+            if(header.isHeaderV2() && Network.get() != Network.REGTEST) {
+                throw new VerificationException("Header at height " + height + " is a v2 header, but " + Network.get().getName() + " has no BLAKE2b schedule");
+            }
             return;
         }
 
@@ -105,6 +111,50 @@ public class HeaderChainState {
         if(header.isHeaderV2() != expectHeaderV2) {
             throw new VerificationException("Header at height " + height + " is a v" + (header.isHeaderV2() ? "2" : "1")
                     + " header, but the chain requires v" + (expectHeaderV2 ? "2" : "1") + " at that height");
+        }
+    }
+
+    /**
+     * Knots refuses a block version below 2, 3 or 4 from the BIP34, BIP66 and BIP65 heights on (bad-version), which are
+     * consensus.BIP34Height, BIP66Height and BIP65Height in its chainparams. Knots has no testnet5 to match, so it is left
+     * alone. Regtest defaults to 1 for all three but can move them through -testactivationheight, so it is deliberately
+     * left alone too, as its proof of work is not enforced here either.
+     */
+    private static void requireMinimumVersion(int height, BlockHeader header) throws VerificationException {
+        int minimumVersion = getMinimumVersion(Network.get(), height);
+        if(header.getVersion() < minimumVersion) {
+            throw new VerificationException("Header at height " + height + " has version " + header.getVersion() + ", below the minimum of " + minimumVersion);
+        }
+    }
+
+    static int getMinimumVersion(Network network, int height) {
+        int[] heights = switch(network) {
+            case MAINNET -> new int[] {227931, 363725, 388381};
+            case TESTNET -> new int[] {21111, 330776, 581885};
+            case TESTNET4, SIGNET -> new int[] {1, 1, 1};
+            default -> null;
+        };
+        if(heights == null) {
+            return 0;
+        }
+
+        return height >= heights[2] ? 4 : height >= heights[1] ? 3 : height >= heights[0] ? 2 : 0;
+    }
+
+    /**
+     * The v2 header rules Knots enforces beyond its version: the header commits to its own height (bad-header-height),
+     * and the top two flag bits are reserved for future hardforks (bad-flags-highbits).
+     */
+    private static void requireValidHeaderV2Fields(int height, BlockHeader header) throws VerificationException {
+        if(!header.isHeaderV2()) {
+            return;
+        }
+
+        if(header.getHeight() != height) {
+            throw new VerificationException("Header at height " + height + " carries height " + header.getHeight() + " in its header");
+        }
+        if((header.getFlags() & BlockHeader.FLAGS_RESERVED_MASK) != 0) {
+            throw new VerificationException("Header at height " + height + " sets reserved flag bits " + Integer.toHexString(header.getFlags()));
         }
     }
 
