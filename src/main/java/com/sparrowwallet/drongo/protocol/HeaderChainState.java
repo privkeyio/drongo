@@ -116,24 +116,29 @@ public class HeaderChainState {
 
     /**
      * Knots refuses a block version below 2, 3 or 4 from the BIP34, BIP66 and BIP65 heights on (bad-version), which are
-     * consensus.BIP34Height, BIP66Height and BIP65Height in its chainparams. Regtest sets its own heights through
-     * -testactivationheight, and Knots has no testnet5 to match, so both are left alone.
+     * consensus.BIP34Height, BIP66Height and BIP65Height in its chainparams. Knots has no testnet5 to match, so it is left
+     * alone. Regtest defaults to 1 for all three but can move them through -testactivationheight, so it is deliberately
+     * left alone too, as its proof of work is not enforced here either.
      */
     private static void requireMinimumVersion(int height, BlockHeader header) throws VerificationException {
-        int[] heights = switch(Network.get()) {
+        int minimumVersion = getMinimumVersion(Network.get(), height);
+        if(header.getVersion() < minimumVersion) {
+            throw new VerificationException("Header at height " + height + " has version " + header.getVersion() + ", below the minimum of " + minimumVersion);
+        }
+    }
+
+    static int getMinimumVersion(Network network, int height) {
+        int[] heights = switch(network) {
             case MAINNET -> new int[] {227931, 363725, 388381};
             case TESTNET -> new int[] {21111, 330776, 581885};
             case TESTNET4, SIGNET -> new int[] {1, 1, 1};
             default -> null;
         };
         if(heights == null) {
-            return;
+            return 0;
         }
 
-        int minimumVersion = height >= heights[2] ? 4 : height >= heights[1] ? 3 : height >= heights[0] ? 2 : 0;
-        if(header.getVersion() < minimumVersion) {
-            throw new VerificationException("Header at height " + height + " has version " + header.getVersion() + ", below the minimum of " + minimumVersion);
-        }
+        return height >= heights[2] ? 4 : height >= heights[1] ? 3 : height >= heights[0] ? 2 : 0;
     }
 
     /**

@@ -265,6 +265,27 @@ public class HeaderChainStateTest {
     }
 
     @Test
+    public void testMinimumVersionTurnsOnAtEachActivationHeight() {
+        int[][] mainnet = {{227931, 2}, {363725, 3}, {388381, 4}};
+        int[][] testnet = {{21111, 2}, {330776, 3}, {581885, 4}};
+        for(int[] activation : mainnet) {
+            Assertions.assertEquals(activation[1] == 2 ? 0 : activation[1] - 1, HeaderChainState.getMinimumVersion(Network.MAINNET, activation[0] - 1));
+            Assertions.assertEquals(activation[1], HeaderChainState.getMinimumVersion(Network.MAINNET, activation[0]));
+        }
+        for(int[] activation : testnet) {
+            Assertions.assertEquals(activation[1] == 2 ? 0 : activation[1] - 1, HeaderChainState.getMinimumVersion(Network.TESTNET, activation[0] - 1));
+            Assertions.assertEquals(activation[1], HeaderChainState.getMinimumVersion(Network.TESTNET, activation[0]));
+        }
+        for(Network network : new Network[] {Network.TESTNET4, Network.SIGNET}) {
+            Assertions.assertEquals(0, HeaderChainState.getMinimumVersion(network, 0));
+            Assertions.assertEquals(4, HeaderChainState.getMinimumVersion(network, 1));
+        }
+        for(Network network : new Network[] {Network.REGTEST, Network.TESTNET5}) {
+            Assertions.assertEquals(0, HeaderChainState.getMinimumVersion(network, 1000000));
+        }
+    }
+
+    @Test
     public void testWork() {
         Network.set(Network.MAINNET);
 
