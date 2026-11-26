@@ -62,6 +62,7 @@ public class HeaderChainState {
             throw new VerificationException("Header at height " + (height + 1) + " has difficulty target " + Long.toHexString(header.getDifficultyTarget())
                     + " but the chain requires " + Long.toHexString(requiredBits));
         }
+        requireMinimumVersion(height + 1, header);
         requireExpectedHeaderVersion(height + 1, header);
         requireValidHeaderV2Fields(height + 1, header);
         if(!header.verifyProofOfWork()) {
@@ -110,6 +111,28 @@ public class HeaderChainState {
         if(header.isHeaderV2() != expectHeaderV2) {
             throw new VerificationException("Header at height " + height + " is a v" + (header.isHeaderV2() ? "2" : "1")
                     + " header, but the chain requires v" + (expectHeaderV2 ? "2" : "1") + " at that height");
+        }
+    }
+
+    /**
+     * Knots refuses a block version below 2, 3 or 4 from the BIP34, BIP66 and BIP65 heights on (bad-version), which are
+     * consensus.BIP34Height, BIP66Height and BIP65Height in its chainparams. Regtest sets its own heights through
+     * -testactivationheight, and Knots has no testnet5 to match, so both are left alone.
+     */
+    private static void requireMinimumVersion(int height, BlockHeader header) throws VerificationException {
+        int[] heights = switch(Network.get()) {
+            case MAINNET -> new int[] {227931, 363725, 388381};
+            case TESTNET -> new int[] {21111, 330776, 581885};
+            case TESTNET4, SIGNET -> new int[] {1, 1, 1};
+            default -> null;
+        };
+        if(heights == null) {
+            return;
+        }
+
+        int minimumVersion = height >= heights[2] ? 4 : height >= heights[1] ? 3 : height >= heights[0] ? 2 : 0;
+        if(header.getVersion() < minimumVersion) {
+            throw new VerificationException("Header at height " + height + " has version " + header.getVersion() + ", below the minimum of " + minimumVersion);
         }
     }
 

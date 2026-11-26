@@ -139,6 +139,18 @@ public class MainnetActivationTest {
     }
 
     @Test
+    public void testAHeaderBelowVersionFourIsRefused() throws IOException {
+        byte[] bytes = Utils.hexToBytes(readLines().get(ACTIVATION_HEIGHT - FIRST_HEIGHT));
+        Utils.uint32ToByteArrayLE(BlockHeader.HEADER_V2_FLAG | 3, bytes, 0);
+        BlockHeader header = new BlockHeader(bytes);
+        Assertions.assertTrue(header.isHeaderV2());
+        Assertions.assertEquals(3, header.getVersion());
+
+        VerificationException e = Assertions.assertThrows(VerificationException.class, () -> addAtActivation(header));
+        Assertions.assertTrue(e.getMessage().contains("below the minimum of 4"), e.getMessage());
+    }
+
+    @Test
     public void testAHeaderSettingEitherReservedFlagBitIsRefused() throws IOException {
         for(int bit : new int[] {0x40, 0x80}) {
             byte[] bytes = Utils.hexToBytes(readLines().get(ACTIVATION_HEIGHT - FIRST_HEIGHT));
@@ -151,7 +163,10 @@ public class MainnetActivationTest {
         }
     }
 
-    /** Knots leaves BLAKE2b unscheduled on testnet3 and signet, so a v2 header is never valid there. */
+    /**
+     * Knots leaves BLAKE2b unscheduled on testnet3 and signet, so a v2 header is never valid there. Knots has no testnet5,
+     * so refusing v2 there is this project's own choice rather than a match to the node.
+     */
     @Test
     public void testABlake2bHeaderIsRefusedWhereNoScheduleExists() throws IOException {
         for(Network network : new Network[] {Network.TESTNET, Network.SIGNET, Network.TESTNET5}) {
